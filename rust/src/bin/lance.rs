@@ -33,6 +33,11 @@ enum Commands {
         #[clap(value_parser)]
         path: std::path::PathBuf,
     },
+    Show {
+        /// Path to the lance dataset.
+        #[clap(value_parser)]
+        path: std::path::PathBuf,
+    },
 }
 
 fn main() {
@@ -40,6 +45,12 @@ fn main() {
 
     match &args.command {
         Commands::Inspect { path } => {
+            let f = File::open(path).unwrap();
+            let reader = FileReader::new(f).unwrap();
+            println!("Number of RecordBatch: {}", reader.num_chunks());
+            println!("Schema: {}\n", reader.schema())
+        }
+        Commands::Show { path } => {
             let f = File::open(path).unwrap();
             let reader = FileReader::new(f).unwrap();
             println!("Number of RecordBatch: {}", reader.num_chunks());
