@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import platform
 
 import pytest
 
@@ -22,6 +23,7 @@ import numpy as np
 import pandas as pd
 import PIL
 import pyarrow as pa
+import pyarrow.compute as pc
 
 import lance
 from lance.pytorch.data import LanceDataset
@@ -45,6 +47,8 @@ def test_data_loader(tmp_path: Path):
     assert torch.equal(value_batch, torch.tensor([10, 11, 12, 13]))
 
 
+@pytest.mark.skipif(platform.system() != "Linux",
+                    reason="there's a bug on mac")
 def test_dataset_with_ext_types(tmp_path: Path):
     images = []
     labels = []
@@ -68,3 +72,32 @@ def test_dataset_with_ext_types(tmp_path: Path):
     images, labels = batch
     assert all([isinstance(p, PIL.Image.Image) for p in images])
     assert torch.equal(labels, torch.tensor([0, 1, 2, 0], dtype=torch.int8))
+
+
+def test_data_loader_with_filter(tmp_path: Path):
+    torch.Tensor([1, 2, 3])
+    ids = pa.array(range(10))
+    values = pa.array(range(10, 20))
+    split = pa.array(["train", "val"] * 5)
+    tab = pa.Table.from_arrays([ids, values, split], names=["id", "value", "split"])
+
+    lance.write_table(tab, tmp_path / "lance")
+
+    dataset = LanceDataset(tmp_path / "lance", filter=pc.field("split") == "train")
+    for id, value, split in dataset:
+        assert split == "train"
+        assert id % 2 == 0
+        assert torch.is_tensor(id)
+        assert (value - 10) % 2 == 0
+        assert torch.is_tensor(value)
+
+def test_data_loader_projection(tmp_path: Path):
+    ids = pa.array(range(10))
+    values = pa.array([f"num-{i}" for i in ids])
+    tab = pa.Table.from_arrays([ids, values], names=["id", "value"])
+    lance.write_table(tab, tmp_path / "lance")
+
+    dataset = LanceDataset(tmp_path / "lance", columns=["value"], filter=pc.field("id") >= 5)
+    for elem, expected_id in zip(dataset, range(5, 10)):
+        assert elem == f"num-{expected_id}"
+

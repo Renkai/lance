@@ -23,6 +23,8 @@
 #include "lance/arrow/stl.h"
 #include "lance/arrow/type.h"
 
+using lance::arrow::ToArray;
+
 TEST_CASE("Merge simple structs") {
   auto a = lance::arrow::ToArray<int32_t>({1, 2, 3}).ValueOrDie();
   auto left = ::arrow::StructArray::Make({a}, {"a"}).ValueOrDie();

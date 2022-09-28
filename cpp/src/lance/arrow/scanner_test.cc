@@ -26,8 +26,12 @@
 
 #include "lance/arrow/stl.h"
 #include "lance/arrow/type.h"
+#include "lance/arrow/utils.h"
 #include "lance/format/schema.h"
 #include "lance/testing/extension_types.h"
+#include "lance/testing/io.h"
+
+using lance::arrow::ToArray;
 
 auto nested_schema = ::arrow::schema({::arrow::field("pk", ::arrow::int32()),
                                       ::arrow::field("objects",
@@ -70,7 +74,6 @@ TEST_CASE("Build Scanner with nested struct") {
   auto result = scanner_builder.Finish();
   CHECK(result.ok());
   auto scanner = result.ValueOrDie();
-  fmt::print("Projected: {}\n", scanner->options()->projected_schema);
 
   auto expected_proj_schema = ::arrow::schema({::arrow::field(
       "objects", ::arrow::list(::arrow::struct_({::arrow::field("val", ::arrow::int64())})))});
@@ -115,14 +118,13 @@ std::shared_ptr<::arrow::dataset::Scanner> MakeScanner(std::shared_ptr<::arrow::
   auto result = scanner_builder.Finish();
   CHECK(result.ok());
   auto scanner = result.ValueOrDie();
-  fmt::print("Projected: {}\n", scanner->options()->projected_schema);
   return scanner;
 }
 
 TEST_CASE("Scanner with extension") {
-  auto table = MakeTable();
   auto ext_type = std::make_shared<::lance::testing::ParametricType>(1);
   CHECK(::arrow::RegisterExtensionType(ext_type).ok());
+  auto table = MakeTable();
   auto scanner = MakeScanner(table);
 
   auto dataset = std::make_shared<::arrow::dataset::InMemoryDataset>(table);
@@ -202,4 +204,134 @@ TEST_CASE("Test ScanBatchesAsync with batch size") {
     CHECK(batch.record_batch->num_rows() == kBatchSize);
   }
   CHECK(num_batches == kTotalValues / kBatchSize);
+}
+
+// GH-188
+TEST_CASE("Filter over empty list") {
+  auto values_arr = ToArray({1, 2, 3}).ValueOrDie();
+
+  auto elem_builder = std::make_shared<::arrow::FloatBuilder>();
+  auto list_builder = ::arrow::ListBuilder(::arrow::default_memory_pool(), elem_builder);
+  CHECK(list_builder.Append().ok());
+  CHECK(elem_builder->AppendValues({0.1, 0.2}).ok());
+  CHECK(list_builder.AppendNull().ok());
+  CHECK(list_builder.Append().ok());
+  CHECK(elem_builder->Append(11.1).ok());
+  auto list_arr = list_builder.Finish().ValueOrDie();
+
+  auto schema = ::arrow::schema({::arrow::field("ints", ::arrow::int32()),
+                                 ::arrow::field("floats", ::arrow::list(::arrow::float32()))});
+  auto t = ::arrow::Table::Make(schema, {values_arr, list_arr});
+
+  auto dataset = lance::testing::MakeDataset(t).ValueOrDie();
+  auto scan_builder = dataset->NewScan().ValueOrDie();
+
+  // This filter should result in an empty list array
+  CHECK(scan_builder
+            ->Filter(::arrow::compute::equal(::arrow::compute::field_ref("ints"),
+                                             ::arrow::compute::literal(100)))
+            .ok());
+  auto scanner = scan_builder->Finish().ValueOrDie();
+
+  auto actual = scanner->ToTable().ValueOrDie();
+  CHECK(actual->num_rows() == 0);
+  CHECK(t->schema()->Equals(actual->schema()));
+}
+
+TEST_CASE("Filter with limit") {
+  auto values_arr = ToArray({1, 2, 3}).ValueOrDie();
+
+  auto elem_builder = std::make_shared<::arrow::FloatBuilder>();
+  auto list_builder = ::arrow::ListBuilder(::arrow::default_memory_pool(), elem_builder);
+  CHECK(list_builder.Append().ok());
+  CHECK(elem_builder->AppendValues({0.1, 0.2}).ok());
+  CHECK(list_builder.AppendNull().ok());
+  CHECK(list_builder.Append().ok());
+  CHECK(elem_builder->Append(11.1).ok());
+  auto list_arr = list_builder.Finish().ValueOrDie();
+
+  auto schema = ::arrow::schema({::arrow::field("ints", ::arrow::int32()),
+                                 ::arrow::field("floats", ::arrow::list(::arrow::float32()))});
+  auto t = ::arrow::Table::Make(schema, {values_arr, list_arr});
+  auto dataset = lance::testing::MakeDataset(t).ValueOrDie();
+  auto scan_builder = lance::arrow::ScannerBuilder(dataset);
+  CHECK(scan_builder
+            .Filter(::arrow::compute::equal(::arrow::compute::field_ref("ints"),
+                                            ::arrow::compute::literal(100)))
+            .ok());
+  CHECK(scan_builder.Limit(20).ok());
+
+  auto scanner = scan_builder.Finish().ValueOrDie();
+
+  auto actual = scanner->ToTable().ValueOrDie();
+  CHECK(actual->num_rows() == 0);
+  CHECK(t->schema()->Equals(actual->schema()));
+}
+
+TEST_CASE("Scanner projection should not include filter columns") {
+  auto ints_arr = ToArray({1, 2, 3}).ValueOrDie();
+  auto strings_arr = ToArray({"one", "two", "three"}).ValueOrDie();
+
+  auto schema = ::arrow::schema(
+      {::arrow::field("ints", ::arrow::int32()), ::arrow::field("strs", ::arrow::utf8())});
+  auto t = ::arrow::Table::Make(schema, {ints_arr, strings_arr});
+  auto dataset = lance::testing::MakeDataset(t).ValueOrDie();
+  auto scan_builder = lance::arrow::ScannerBuilder(dataset);
+  CHECK(scan_builder
+            .Filter(::arrow::compute::equal(::arrow::compute::field_ref("ints"),
+                                            ::arrow::compute::literal(2)))
+            .ok());
+  CHECK(scan_builder.Project({"strs"}).ok());
+
+  auto scanner = scan_builder.Finish().ValueOrDie();
+  auto actual = scanner->ToTable().ValueOrDie();
+  auto expected_schema = ::arrow::schema({::arrow::field("strs", ::arrow::utf8())});
+  INFO("Expected schema: " << expected_schema->ToString()
+                           << "\nGot: " << actual->schema()->ToString());
+  CHECK(actual->schema()->Equals(expected_schema));
+}
+
+TEST_CASE("Test filter with smaller batch size than block size") {
+  std::vector<int32_t> ints(200);
+  std::iota(std::begin(ints), std::end(ints), 0);
+  auto ints_arr = ToArray(ints).ValueOrDie();
+  std::vector<std::string> strs(ints.size());
+  std::transform(
+      std::begin(ints), std::end(ints), std::begin(strs), [](auto v) { return std::to_string(v); });
+  auto strs_arr = ToArray(strs).ValueOrDie();
+
+  auto schema = ::arrow::schema(
+      {::arrow::field("ints", ::arrow::int32()), ::arrow::field("strs", ::arrow::utf8())});
+  auto table = ::arrow::Table::Make(schema, {ints_arr, strs_arr});
+
+  const uint64_t kGroupSize = 64;
+  auto dataset = lance::testing::MakeDataset(table, {}, kGroupSize).ValueOrDie();
+
+  auto scan_builder = lance::arrow::ScannerBuilder(dataset);
+  // WHERE ints % 5 == 0
+  auto status = scan_builder.Filter(::arrow::compute::equal(
+      ::arrow::compute::call(
+          "subtract",
+          {::arrow::compute::field_ref("ints"),
+           ::arrow::compute::call(
+               "multiply",
+               {::arrow::compute::call(
+                    "divide", {::arrow::compute::field_ref("ints"), ::arrow::compute::literal(5)}),
+                ::arrow::compute::literal(5)})}),
+      ::arrow::compute::literal(0)));
+  INFO("Build filter status: " << status.message());
+  CHECK(status.ok());
+  CHECK(scan_builder.Project({"strs"}).ok());
+  CHECK(scan_builder.BatchSize(7).ok());  // Some number that is not dividable by the group size.
+  auto scanner = scan_builder.Finish().ValueOrDie();
+  auto actual = scanner->ToTable().ValueOrDie();
+
+  std::vector<std::string> expected_strs;
+  for (size_t i = 0; i < ints.size() / 5; i++) {
+    expected_strs.emplace_back(std::to_string(i * 5));
+  }
+  auto expected_arr = ToArray(expected_strs).ValueOrDie();
+  auto expected = ::arrow::Table::Make(::arrow::schema({::arrow::field("strs", ::arrow::utf8())}),
+                                       {expected_arr});
+  CHECK(actual->Equals(*expected));
 }

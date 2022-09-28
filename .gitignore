@@ -57,6 +57,11 @@ python/wheels
 logs
 *.ckpt
 
+docs/_build
+docs/api/python
+
+**/.ipynb_checkpoints/
+
 # Rust
 Cargo.lock
 target

@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Lance PyTorch Dataset"""
+
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 from urllib.parse import urlparse
@@ -41,6 +43,8 @@ def _data_to_tensor(data: Any) -> Union[torch.Tensor, PIL.Image.Image]:
         return data.to_pil()
     elif isinstance(data, dict):
         return {k: to_tensor(v) for k, v in data.items()}
+    elif isinstance(data, str):
+        return data
     else:
         return torch.tensor(data)
 
@@ -183,4 +187,6 @@ class LanceDataset(IterableDataset):
                         ]
                         if self.transform is not None:
                             record = self.transform(*record)
+                        if batch.num_columns == 1:
+                            record = record[0]
                         yield record
