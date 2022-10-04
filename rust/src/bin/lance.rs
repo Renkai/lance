@@ -12,7 +12,7 @@
 //  See the License for the specific language governing permissions and
 //  limitations under the License.
 
-use std::fs::File;
+use std::fs::{File, read};
 
 use clap::{Parser, Subcommand};
 
@@ -54,7 +54,9 @@ fn main() {
             let f = File::open(path).unwrap();
             let reader = FileReader::new(f).unwrap();
             println!("Number of RecordBatch: {}", reader.num_chunks());
-            println!("Schema: {}\n", reader.schema())
+            println!("Schema: {}\n", reader.schema());
+            let chunk = reader.read_chunk();
+            println!("chunk: {:?}", chunk)
         }
     }
 }

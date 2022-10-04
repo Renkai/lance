@@ -13,6 +13,8 @@
 //  limitations under the License.
 
 use std::io::{Cursor, Error, ErrorKind, Read, Result, Seek, SeekFrom};
+use arrow2::array::Array;
+use arrow2::chunk::Chunk;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -95,5 +97,10 @@ impl<R: Read + Seek> FileReader<R> {
 
     pub fn num_chunks(&self) -> i32 {
         self.metadata.batch_offsets.len() as i32 - 1
+    }
+
+    pub fn read_chunk(&self) -> Result<Chunk<Box<dyn Array>>> {
+
+        unimplemented!()
     }
 }
