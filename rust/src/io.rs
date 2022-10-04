@@ -117,5 +117,7 @@ impl<R: Read + Seek> FileReader<R> {
 }
 
 fn get_array(field: &Field, batch_id: usize, array_params: ArrayParams) -> Box<dyn Array> {
+    let d_type = field.data_type2();
+
     todo!()
 }

@@ -17,6 +17,8 @@
 use std::fmt;
 
 use arrow::datatypes::DataType;
+use arrow2::datatypes::DataType as DType2;
+use arrow2::datatypes::Field as Field2;
 
 use crate::encodings::Encoding;
 use crate::format::pb;
@@ -98,6 +100,64 @@ impl Field {
             "string" => DataType::Utf8,
             _ => panic!(),
         }
+    }
+
+    pub fn from_logical_type(logical_type: &String) -> DType2 {
+        match logical_type.as_str() {
+            "bool" => DType2::Boolean,
+            "uint8" => DType2::UInt8,
+            "int8" => DType2::Int8,
+            "uint16" => DType2::UInt16,
+            "int16" => DType2::Int16,
+            "uint32" => DType2::UInt32,
+            "int32" => DType2::Int32,
+            "uint64" => DType2::UInt64,
+            "int64" => DType2::Int64,
+            "halffloat" => DType2::Float16,
+            "float" => DType2::Float32,
+            "double" => DType2::Float64,
+            "binary" => DType2::Binary,
+            "string" => DType2::Utf8,
+            _ => panic!(),
+        }
+    }
+    pub fn is_extension_type(&self) -> bool {
+        return !self.extension_name.is_empty();
+    }
+    /// Return Arrow Data Type.
+    pub fn data_type2(&self) -> DType2 {
+        if self.is_extension_type() {
+            //TODO don't know why shall we have this, just make compile pass
+            let boxed_type = DType2::Binary;
+            DType2::Extension(self.extension_name.clone(), Box::new(boxed_type), None)
+        } else {
+            self.get_arrow2_data_type()
+        }
+    }
+
+    pub fn get_arrow2_data_type(&self) -> DType2 {
+        let logical_type = &self.logical_type;
+        return if logical_type == "list" || logical_type == "list.struct" {
+            assert_eq!(self.children.len(), 1);
+            DType2::List(Box::from(Field2 {
+                name: self.name.clone(),
+                data_type: self.data_type2(),
+                is_nullable: false, //TODO don't know what to fill
+                metadata: Default::default(),
+            }))
+        } else if logical_type == "struct" {
+            let fields: Vec<Field2> = self.children.iter().map(|field| {
+                Field2 {
+                    name: field.name.clone(),
+                    data_type: self.data_type2(),
+                    is_nullable: false,
+                    metadata: Default::default(),
+                }
+            }).collect();
+            DType2::Struct(fields)
+        } else {
+            Self::from_logical_type(&self.logical_type)
+        };
     }
 
     fn insert(&mut self, child: Field) {
