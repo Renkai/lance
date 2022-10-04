@@ -30,8 +30,11 @@
 #include "lance/format/schema.h"
 #include "lance/testing/extension_types.h"
 #include "lance/testing/io.h"
+#include "lance/testing/json.h"
 
 using lance::arrow::ToArray;
+using lance::testing::ArrayFromJSON;
+using lance::testing::TableFromJSON;
 
 auto nested_schema = ::arrow::schema({::arrow::field("pk", ::arrow::int32()),
                                       ::arrow::field("objects",
@@ -102,7 +105,6 @@ std::shared_ptr<::arrow::Table> MakeTable() {
 
   auto schema =
       ::arrow::schema({arrow::field("c1", ::arrow::utf8()), arrow::field("c2", ext_type)});
-
   std::vector<std::shared_ptr<::arrow::Array>> cols;
   cols.push_back(c1);
   cols.push_back(::arrow::ExtensionType::WrapArray(ext_type, c2));
@@ -208,20 +210,13 @@ TEST_CASE("Test ScanBatchesAsync with batch size") {
 
 // GH-188
 TEST_CASE("Filter over empty list") {
-  auto values_arr = ToArray({1, 2, 3}).ValueOrDie();
-
-  auto elem_builder = std::make_shared<::arrow::FloatBuilder>();
-  auto list_builder = ::arrow::ListBuilder(::arrow::default_memory_pool(), elem_builder);
-  CHECK(list_builder.Append().ok());
-  CHECK(elem_builder->AppendValues({0.1, 0.2}).ok());
-  CHECK(list_builder.AppendNull().ok());
-  CHECK(list_builder.Append().ok());
-  CHECK(elem_builder->Append(11.1).ok());
-  auto list_arr = list_builder.Finish().ValueOrDie();
-
   auto schema = ::arrow::schema({::arrow::field("ints", ::arrow::int32()),
                                  ::arrow::field("floats", ::arrow::list(::arrow::float32()))});
-  auto t = ::arrow::Table::Make(schema, {values_arr, list_arr});
+  auto t = TableFromJSON(schema, R"([
+{"ints": 1, "floats": [0.1, 0.2]},
+{"ints": 2},
+{"ints": 3, "floats": [11.1]}
+])").ValueOrDie();
 
   auto dataset = lance::testing::MakeDataset(t).ValueOrDie();
   auto scan_builder = dataset->NewScan().ValueOrDie();
@@ -239,20 +234,13 @@ TEST_CASE("Filter over empty list") {
 }
 
 TEST_CASE("Filter with limit") {
-  auto values_arr = ToArray({1, 2, 3}).ValueOrDie();
-
-  auto elem_builder = std::make_shared<::arrow::FloatBuilder>();
-  auto list_builder = ::arrow::ListBuilder(::arrow::default_memory_pool(), elem_builder);
-  CHECK(list_builder.Append().ok());
-  CHECK(elem_builder->AppendValues({0.1, 0.2}).ok());
-  CHECK(list_builder.AppendNull().ok());
-  CHECK(list_builder.Append().ok());
-  CHECK(elem_builder->Append(11.1).ok());
-  auto list_arr = list_builder.Finish().ValueOrDie();
-
   auto schema = ::arrow::schema({::arrow::field("ints", ::arrow::int32()),
                                  ::arrow::field("floats", ::arrow::list(::arrow::float32()))});
-  auto t = ::arrow::Table::Make(schema, {values_arr, list_arr});
+  auto t = TableFromJSON(schema, R"([
+{"ints": 1, "floats": [0.1, 0.2]},
+{"ints": 2, "floats": [11.1]}
+])").ValueOrDie();
+
   auto dataset = lance::testing::MakeDataset(t).ValueOrDie();
   auto scan_builder = lance::arrow::ScannerBuilder(dataset);
   CHECK(scan_builder
@@ -262,19 +250,15 @@ TEST_CASE("Filter with limit") {
   CHECK(scan_builder.Limit(20).ok());
 
   auto scanner = scan_builder.Finish().ValueOrDie();
-
   auto actual = scanner->ToTable().ValueOrDie();
   CHECK(actual->num_rows() == 0);
   CHECK(t->schema()->Equals(actual->schema()));
 }
 
 TEST_CASE("Scanner projection should not include filter columns") {
-  auto ints_arr = ToArray({1, 2, 3}).ValueOrDie();
-  auto strings_arr = ToArray({"one", "two", "three"}).ValueOrDie();
-
   auto schema = ::arrow::schema(
-      {::arrow::field("ints", ::arrow::int32()), ::arrow::field("strs", ::arrow::utf8())});
-  auto t = ::arrow::Table::Make(schema, {ints_arr, strings_arr});
+      {::arrow::field("ints", ::arrow::int32(), false), ::arrow::field("strs", ::arrow::utf8())});
+  auto t = TableFromJSON(schema, R"([{"ints": 1, "strs": "one"}])").ValueOrDie();
   auto dataset = lance::testing::MakeDataset(t).ValueOrDie();
   auto scan_builder = lance::arrow::ScannerBuilder(dataset);
   CHECK(scan_builder
@@ -334,4 +318,34 @@ TEST_CASE("Test filter with smaller batch size than block size") {
   auto expected = ::arrow::Table::Make(::arrow::schema({::arrow::field("strs", ::arrow::utf8())}),
                                        {expected_arr});
   CHECK(actual->Equals(*expected));
+}
+
+// GH-204
+TEST_CASE("Test projection over nested field") {
+  auto schema =
+      ::arrow::schema({::arrow::field("id", ::arrow::int64()),
+                       ::arrow::field("annotations",
+                                      ::arrow::struct_({
+                                          ::arrow::field("name", ::arrow::list(::arrow::utf8())),
+                                          ::arrow::field("value", ::arrow::list(::arrow::int32())),
+                                      }))});
+  auto table =
+      TableFromJSON(schema, R"([{"id": 1, "annotations": {"name": ["a", "b"], "value": [1]}}])")
+          .ValueOrDie();
+  fmt::print("Table is: {}\n", table->ToString());
+
+  auto dataset = lance::testing::MakeDataset(table).ValueOrDie();
+  auto scan_builder = lance::arrow::ScannerBuilder(dataset);
+  CHECK(scan_builder.Project({"annotations.name"}).ok());
+  auto scanner = scan_builder.Finish().ValueOrDie();
+  auto result = scanner->ToTable();
+  INFO("Scanner to table result: " << result.status().ToString());
+  CHECK(result.ok());
+  auto actual = result.ValueOrDie();
+  auto expected_schema = ::arrow::schema({::arrow::field(
+      "annotations", ::arrow::struct_({::arrow::field("name", ::arrow::list(::arrow::utf8()))}))});
+  CHECK(actual->schema()->Equals(expected_schema));
+  auto expected_table =
+      TableFromJSON(expected_schema, R"([{"annotations": {"name": ["a", "b"]}}])").ValueOrDie();
+  CHECK(actual->Equals(*expected_table));
 }
