@@ -55,7 +55,7 @@ fn main() {
             let reader = FileReader::new(f).unwrap();
             println!("Number of RecordBatch: {}", reader.num_chunks());
             println!("Schema: {}\n", reader.schema());
-            let chunk = reader.read_chunk();
+            let chunk = reader.get(0);
             println!("chunk: {:?}", chunk)
         }
     }

@@ -19,7 +19,7 @@ use arrow2::chunk::Chunk;
 use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::format::pb;
-use crate::schema::Schema;
+use crate::schema::{Field, Schema};
 
 static MAGIC_NUMBER: &str = "LANC";
 
@@ -36,6 +36,11 @@ trait ProtoReader<P: prost::Message + Default> {
 }
 
 struct ProtoParser;
+
+struct ArrayParams {
+    offset: u32,
+    len: Option<u32>,
+}
 
 impl<P: prost::Message + Default> ProtoReader<P> for ProtoParser {
     fn read<R: Read + Seek>(file: &mut R, pos: i64) -> Result<P> {
@@ -99,8 +104,18 @@ impl<R: Read + Seek> FileReader<R> {
         self.metadata.batch_offsets.len() as i32 - 1
     }
 
-    pub fn read_chunk(&self) -> Result<Chunk<Box<dyn Array>>> {
-
-        unimplemented!()
+    pub fn get(&self, idx: u32) -> Box<dyn Array> {
+        let schema = self.schema();
+        for field in &schema.fields {
+            let num_batches = self.metadata.batch_offsets.len() - 1;
+            for batch_id in 0..num_batches {
+                let value: Box<dyn Array> = get_array(&field, batch_id, ArrayParams { offset: 0, len: None });
+            }
+        }
+       todo!()
     }
+}
+
+fn get_array(field: &Field, batch_id: usize, array_params: ArrayParams) -> Box<dyn Array> {
+    todo!()
 }

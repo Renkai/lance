@@ -142,7 +142,7 @@ impl fmt::Display for Field {
 /// Lance file Schema.
 #[derive(Debug)]
 pub struct Schema {
-    fields: Vec<Field>,
+    pub(crate) fields: Vec<Field>,
 }
 
 impl Schema {
