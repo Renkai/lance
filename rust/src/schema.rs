@@ -135,6 +135,10 @@ impl Field {
         }
     }
 
+    pub fn storage_type(&self) -> DType2 {
+        self.get_arrow2_data_type()
+    }
+
     pub fn get_arrow2_data_type(&self) -> DType2 {
         let logical_type = &self.logical_type;
         return if logical_type == "list" || logical_type == "list.struct" {

@@ -15,6 +15,7 @@
 use std::io::{Cursor, Error, ErrorKind, Read, Result, Seek, SeekFrom};
 use arrow2::array::Array;
 use arrow2::chunk::Chunk;
+use arrow2::datatypes::DataType;
 
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -112,12 +113,39 @@ impl<R: Read + Seek> FileReader<R> {
                 let value: Box<dyn Array> = get_array(&field, batch_id, ArrayParams { offset: 0, len: None });
             }
         }
-       todo!()
+        todo!()
     }
 }
 
 fn get_array(field: &Field, batch_id: usize, array_params: ArrayParams) -> Box<dyn Array> {
     let d_type = field.data_type2();
+    let storage_type = field.storage_type();
+    let storage_array: Box<dyn Array> = match storage_type {
+        DataType::List(_) => { get_list_array(field, batch_id,&array_params) }
+        DataType::Struct(_) => { get_struct_array(field,batch_id,&array_params) }
+        DataType::Dictionary(_, _, _) => { get_dictionary_array(field,batch_id,&array_params) }
+        _ => {
+            get_primitive_array(field,batch_id, array_params)
+        }
+    };
 
+    storage_array
+}
+
+fn get_list_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
+    todo!()
+}
+
+fn get_struct_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
+    todo!()
+}
+
+fn get_dictionary_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
+    todo!()
+}
+
+fn get_primitive_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
+    let field_id = field.id;
+    let page_info = get_page_table(field_id,batch_id);
     todo!()
 }
