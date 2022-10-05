@@ -21,7 +21,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::format::pb;
 use crate::schema::{Field, Schema};
-use crate::page_table::get_page_info;
+use crate::page_table::{get_page_info, PageTable};
 
 static MAGIC_NUMBER: &str = "LANC";
 
@@ -31,7 +31,7 @@ pub struct FileReader<R: Read + Seek> {
     schema: Schema,
     // TODO: impl a Metadata
     metadata: pb::Metadata,
-    page_table:
+    page_table: PageTable
 }
 
 trait ProtoReader<P: prost::Message + Default> {
@@ -92,10 +92,14 @@ impl<R: Read + Seek> FileReader<R> {
         let metadata: crate::format::pb::Metadata = ProtoParser::read(&mut f, metadata_pos)?;
         let manifest: crate::format::pb::Manifest =
             ProtoParser::read(&mut f, metadata.manifest_position as i64)?;
+        let num_columns = manifest.fields.len();
+        let num_batches  = metadata.batch_offsets.len() - 1;
+        let page_table = PageTable::make(&f, metadata.page_table_position, num_columns, num_batches);
         Ok(FileReader {
             file: f,
             schema: Schema::from_proto(&manifest.fields),
             metadata,
+            page_table
         })
     }
 
