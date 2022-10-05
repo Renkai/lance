@@ -21,6 +21,7 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::format::pb;
 use crate::schema::{Field, Schema};
+use crate::page_table::get_page_info;
 
 static MAGIC_NUMBER: &str = "LANC";
 
@@ -30,6 +31,7 @@ pub struct FileReader<R: Read + Seek> {
     schema: Schema,
     // TODO: impl a Metadata
     metadata: pb::Metadata,
+    page_table:
 }
 
 trait ProtoReader<P: prost::Message + Default> {
@@ -125,7 +127,7 @@ fn get_array(field: &Field, batch_id: usize, array_params: ArrayParams) -> Box<d
         DataType::Struct(_) => { get_struct_array(field,batch_id,&array_params) }
         DataType::Dictionary(_, _, _) => { get_dictionary_array(field,batch_id,&array_params) }
         _ => {
-            get_primitive_array(field,batch_id, array_params)
+            get_primitive_array(field,batch_id, &array_params)
         }
     };
 
@@ -146,6 +148,6 @@ fn get_dictionary_array(field: &Field, batch_id: usize, array_params: &ArrayPara
 
 fn get_primitive_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
     let field_id = field.id;
-    let page_info = get_page_table(field_id,batch_id);
+    let page_info = get_page_info(field_id, batch_id);
     todo!()
 }
