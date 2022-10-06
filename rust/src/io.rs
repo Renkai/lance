@@ -121,37 +121,39 @@ impl<R: Read + Seek> FileReader<R> {
         }
         todo!()
     }
-}
 
-fn get_array(field: &Field, batch_id: usize, array_params: ArrayParams) -> Box<dyn Array> {
-    let d_type = field.data_type2();
-    let storage_type = field.storage_type();
-    let storage_array: Box<dyn Array> = match storage_type {
-        DataType::List(_) => { get_list_array(field, batch_id,&array_params) }
-        DataType::Struct(_) => { get_struct_array(field,batch_id,&array_params) }
-        DataType::Dictionary(_, _, _) => { get_dictionary_array(field,batch_id,&array_params) }
-        _ => {
-            get_primitive_array(field,batch_id, &array_params)
-        }
-    };
 
-    storage_array
-}
+    fn get_array(field: &Field, batch_id: usize, array_params: ArrayParams) -> Box<dyn Array> {
+        let d_type = field.data_type2();
+        let storage_type = field.storage_type();
+        let storage_array: Box<dyn Array> = match storage_type {
+            DataType::List(_) => { get_list_array(field, batch_id,&array_params) }
+            DataType::Struct(_) => { get_struct_array(field,batch_id,&array_params) }
+            DataType::Dictionary(_, _, _) => { get_dictionary_array(field,batch_id,&array_params) }
+            _ => {
+                get_primitive_array(field,batch_id, &array_params)
+            }
+        };
 
-fn get_list_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
-    todo!()
-}
+        storage_array
+    }
 
-fn get_struct_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
-    todo!()
-}
+    fn get_list_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
+        todo!()
+    }
 
-fn get_dictionary_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
-    todo!()
-}
+    fn get_struct_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
+        todo!()
+    }
 
-fn get_primitive_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
-    let field_id = field.id;
-    let page_info = get_page_info(field_id, batch_id);
-    todo!()
+    fn get_dictionary_array(field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
+        todo!()
+    }
+
+    fn get_primitive_array(&self, field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
+        let field_id = field.id;
+        let page_info = self.page_table.get_page_info(field_id,batch_id);
+
+        todo!()
+    }
 }

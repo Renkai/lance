@@ -8,10 +8,6 @@ use prost::bytes::{Buf, BufMut};
 
 pub struct PageInfo(i64, i64);
 
-pub fn get_page_info(column_id: i32, batch_id: usize) -> PageInfo {
-    todo!()
-}
-
 pub struct PageTable {
     page_info_map: Vec<Vec<PageInfo>>,
 }
@@ -44,5 +40,9 @@ impl PageTable {
             lt.page_info_map.push(a_col);
         }
         lt
+    }
+
+    pub fn get_page_info(&self,column_id: i32, batch_id: usize) -> &PageInfo {
+        self.page_info_map[column_id][batch_id]
     }
 }
