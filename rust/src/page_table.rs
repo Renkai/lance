@@ -13,7 +13,7 @@ pub fn get_page_info(column_id: i32, batch_id: usize) -> PageInfo {
 }
 
 pub struct PageTable {
-    page_info_map: HashMap<usize, HashMap<usize, PageInfo>>,
+    page_info_map: Vec<Vec<PageInfo>>,
 }
 
 impl PageTable {
@@ -28,27 +28,21 @@ impl PageTable {
         // let buffer = arrow2::buffer::Buffer::from(buf);
 
         let mut vec = vec![0i64; num_columns * num_batches * 2];
+        file.read_i64_into::<LittleEndian>(&mut vec).unwrap(); //TODO is it right?
         let mut buffer = arrow2::buffer::Buffer::from(vec);
-        file.read_i64_into::<LittleEndian>(&mut buffer).unwrap(); //TODO is it right?
         let arr = arrow2::array::Int64Array::new(DataType::Int64, buffer, None);
-        let mut lt = PageTable { page_info_map: HashMap::new() };
+        let mut lt = PageTable { page_info_map: Vec::new() };
+        //a replacement of PageTable::SetPageInfo in C++
         for col in 0..num_columns {
+            let mut a_col = Vec::new();
             for batch in 0..num_batches {
                 let idx = col * num_batches + batch;
                 let position = arr.value(idx * 2);
                 let length = arr.value(idx * 2 + 1);
-                lt.set_page_info(col, batch, position, length);
+                a_col.push(PageInfo(position,length));
             }
+            lt.page_info_map.push(a_col);
         }
-
         lt
-    }
-
-    fn set_page_info(&mut self, col: usize, batch: usize, position: i64, length: i64) {
-        // page_info_map_[column_id][batch_id] = std::make_tuple(position, length)
-        let mut map = &self.page_info_map;
-        //TODO map is not a necessary structure
-        map.insert()
-        todo!()
     }
 }
