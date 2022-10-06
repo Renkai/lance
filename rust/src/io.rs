@@ -153,7 +153,7 @@ impl<R: Read + Seek> FileReader<R> {
     fn get_primitive_array(&self, field: &Field, batch_id: usize, array_params: &ArrayParams) -> Box<dyn Array> {
         let field_id = field.id;
         let page_info = self.page_table.get_page_info(field_id,batch_id);
-
+        field.get_decoder(&self.file);
         todo!()
     }
 }

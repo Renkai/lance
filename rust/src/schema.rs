@@ -15,12 +15,14 @@
 //! Lance Dataset Schema
 
 use std::fmt;
+use std::io::{Read, Seek};
 
-use arrow::datatypes::DataType;
+use arrow::datatypes::{ArrowPrimitiveType, DataType};
 use arrow2::datatypes::DataType as DType2;
 use arrow2::datatypes::Field as Field2;
 
-use crate::encodings::Encoding;
+use crate::encodings::{Decoder, Encoding};
+use crate::encodings::plain::PlainDecoder;
 use crate::format::pb;
 
 /// Lance Field.
@@ -179,6 +181,71 @@ impl Field {
             }
         }
         None
+    }
+
+    pub(crate) fn get_decoder<R: Read + Seek, T: ArrowPrimitiveType>(&self, file: &R) -> Box<dyn Decoder<T>> {
+        //  std::shared_ptr<lance::encodings::Decoder> decoder;
+        //   auto data_type = storage_type();
+        let data_type = self.storage_type();
+        let decoder :  Box<dyn Decoder<T>> =  if self.encoding == Some(Encoding::Plain) {
+            PlainDecoder::new()
+        } else if self.encoding == Some(Encoding::VarBinary) {
+
+        } else if self.encoding == Some(Encoding::Dictionary) {
+
+        } else {
+            //not implemented in C++
+            todo!()
+        }
+        //   if (encoding() == pb::Encoding::PLAIN) {
+        //     if (logical_type_ == "list" || logical_type_ == "list.struct") {
+        //       decoder = std::make_shared<lance::encodings::PlainDecoder>(infile, ::arrow::int32());
+        //     } else if (data_type->id() == ::arrow::TimestampType::type_id ||
+        //                data_type->id() == ::arrow::Time64Type::type_id ||
+        //                data_type->id() == ::arrow::Date64Type::type_id) {
+        //       decoder = std::make_shared<lance::encodings::PlainDecoder>(infile, ::arrow::int64());
+        //     } else if (data_type->id() == ::arrow::Time32Type::type_id ||
+        //                data_type->id() == ::arrow::Date32Type::type_id) {
+        //       decoder = std::make_shared<lance::encodings::PlainDecoder>(infile, ::arrow::int32());
+        //     } else {
+        //       decoder = std::make_shared<lance::encodings::PlainDecoder>(infile, data_type);
+        //     }
+        //   } else if (encoding_ == pb::Encoding::VAR_BINARY) {
+        //     if (logical_type_ == "string") {
+        //       decoder = std::make_shared<lance::encodings::VarBinaryDecoder<::arrow::StringType>>(
+        //           infile, data_type);
+        //     } else if (logical_type_ == "binary") {
+        //       decoder = std::make_shared<lance::encodings::VarBinaryDecoder<::arrow::BinaryType>>(
+        //           infile, data_type);
+        //     }
+        //   } else if (encoding_ == pb::Encoding::DICTIONARY) {
+        //     auto dict_type = std::static_pointer_cast<::arrow::DictionaryType>(data_type);
+        //     if (!dictionary()) {
+        //       {
+        //         std::scoped_lock lock(lock_);
+        //         if (!dictionary()) {
+        //           /// Fetch dictionary on demand?
+        //           ARROW_RETURN_NOT_OK(LoadDictionary(infile));
+        //         }
+        //       }
+        //     }
+        //     decoder =
+        //         std::make_shared<lance::encodings::DictionaryDecoder>(infile, dict_type, dictionary());
+        //   }
+        //
+        //   if (decoder) {
+        //     auto status = decoder->Init();
+        //     if (!status.ok()) {
+        //       return status;
+        //     }
+        //     return decoder;
+        //   } else {
+        //     return ::arrow::Status::NotImplemented(
+        //         fmt::format("Field::GetDecoder(): encoding={} logic_type={} is not supported.",
+        //                     encoding(),
+        //                     logical_type_));
+        //   }
+        todo!()
     }
 }
 
