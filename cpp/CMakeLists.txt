@@ -23,6 +23,8 @@ project(lance CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 
+option(LANCE_BUILD_CMD "Build lance command line tool" ON)
+
 # Default to Debug build if not specified
 if (NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "")
     set(CMAKE_BUILD_TYPE Debug)
@@ -43,7 +45,6 @@ if (CMAKE_BUILD_TYPE STREQUAL Debug)
     add_compile_options(-Werror)
 endif ()
 
-# TODO: Fix on linux
 Include(FetchContent)
 
 # TODO: We can remove this package once std::format is available.
@@ -53,6 +54,20 @@ FetchContent_Declare(fmt
         )
 list(APPEND available_contents fmt)
 
+# TODO: Replace with std::range when it is available
+FetchContent_Declare(range
+        GIT_REPOSITORY https://github.com/ericniebler/range-v3.git
+        GIT_TAG 0.12.0
+        )
+list(APPEND available_contents range)
+
+set(UUID_BUILD_TESTS OFF CACHE INTERNAL "Do not build UUID unit test")
+set(UUID_USING_CXX20_SPAN ON CACHE INTERNAL "Use CXX-20 feature")
+FetchContent_Declare(uuid
+        URL https://github.com/mariusbancila/stduuid/archive/refs/tags/v1.2.2.zip
+        )
+list(APPEND available_contents uuid)
+
 if (NOT CMAKE_BUILD_TYPE STREQUAL "Release")
     FetchContent_Declare(
             Catch2
@@ -61,9 +76,23 @@ if (NOT CMAKE_BUILD_TYPE STREQUAL "Release")
     )
     list(APPEND available_contents catch2)
 endif ()
+
+if (LANCE_BUILD_CMD)
+    FetchContent_Declare(
+            argparse
+            GIT_REPOSITORY https://github.com/p-ranav/argparse.git
+            GIT_TAG v2.9
+    )
+    list(APPEND available_contents argparse)
+endif ()
+
 FetchContent_MakeAvailable(${available_contents})
 
-include_directories(${fmt_SOURCE_DIR}/include)
+include_directories(
+        ${fmt_SOURCE_DIR}/include
+        ${uuid_SOURCE_DIR}/include
+        ${range_SOURCE_DIR}/include
+)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 
 find_package(Protobuf REQUIRED)
@@ -80,14 +109,16 @@ if (APPLE)
     execute_process(COMMAND brew --prefix openssl@1.1 OUTPUT_VARIABLE OPENSSL_PREFIX)
     string(STRIP ${OPENSSL_PREFIX} OPENSSL_ROOT_DIR)
     find_package(Zstd REQUIRED)
-    list(APPEND CMAKE_MODULE_PATH
-            /opt/homebrew/opt/apache-arrow/lib/cmake/arrow
-            /usr/local/opt/apache-arrow/lib/cmake/arrow)
+    execute_process(COMMAND brew --prefix apache-arrow OUTPUT_VARIABLE ARROW_PREFIX)
+    string(STRIP ${ARROW_PREFIX} ARROW_ROOT_DIR)
+    list(APPEND CMAKE_MODULE_PATH ${ARROW_ROOT_DIR}/lib/cmake/arrow)
+    set(ArrowDataset_DIR ${ARROW_ROOT_DIR}/lib/cmake/arrow)
+    set(Parquet_DIR ${ArrowDataset_DIR})
 endif (APPLE)
 
 find_package(Arrow REQUIRED)
-
 find_package(ArrowDataset REQUIRED)
+
 include_directories(include)
 include_directories(src)
 include_directories(${CMAKE_BINARY_DIR}/src)  # for format.pb.{h/cc}
@@ -129,7 +160,7 @@ endif ()
 add_library(lance SHARED ${lance_objects})
 target_link_libraries(lance PUBLIC
         ${Protobuf_LIBRARIES}
-        ${ARROW_SHARED_LIB}
-        ${ARROW_DATASET_SHARED_LIB}
+        Arrow::arrow_shared
+        ArrowDataset::arrow_dataset_shared
         fmt::fmt
         )

@@ -15,10 +15,12 @@
 #pragma once
 
 #include <arrow/array.h>
+#include <arrow/dataset/dataset.h>
 #include <arrow/record_batch.h>
 #include <arrow/result.h>
 
 #include <memory>
+#include <vector>
 
 #include "lance/format/schema.h"
 
@@ -30,6 +32,16 @@ namespace lance::arrow {
     const std::shared_ptr<::arrow::RecordBatch>& rhs,
     ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
 
+/// Merge a list of record batches that represent the different columns of the same rows,
+/// into a single record batch.
+///
+/// \param batches A list of record batches. Must have the same length.
+/// \param pool memory pool.
+/// \return the merged record batch. Or nullptr if batches is empty.
+::arrow::Result<std::shared_ptr<::arrow::RecordBatch>> MergeRecordBatches(
+    const std::vector<std::shared_ptr<::arrow::RecordBatch>>& batches,
+    ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
+
 ::arrow::Result<std::shared_ptr<::arrow::StructArray>> MergeStructArrays(
     const std::shared_ptr<::arrow::StructArray>& lhs,
     const std::shared_ptr<::arrow::StructArray>& rhs,
@@ -39,5 +51,22 @@ namespace lance::arrow {
 ::arrow::Result<std::shared_ptr<::arrow::Schema>> MergeSchema(const ::arrow::Schema& lhs,
                                                               const ::arrow::Schema& rhs);
 
+/// Open Lance dataset from URI.
+::arrow::Result<std::shared_ptr<::arrow::dataset::FileSystemDataset>> OpenDataset(
+    const std::string& uri, std::shared_ptr<::arrow::dataset::Partitioning> partitioning = nullptr);
+
+/// Create an array from a scalar value.
+///
+/// \param scalar the value of each element in the array
+/// \param length array length.
+/// \param pool memory pool
+/// \return
+::arrow::Result<std::shared_ptr<::arrow::Array>> CreateArray(
+    const std::shared_ptr<::arrow::Scalar>& scalar,
+    int64_t length,
+    ::arrow::MemoryPool* pool = ::arrow::default_memory_pool());
+
+/// Get UUID string.
+std::string GetUUIDString();
 
 }  // namespace lance::arrow

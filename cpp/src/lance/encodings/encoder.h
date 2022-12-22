@@ -21,8 +21,10 @@
 #include <concepts>
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "lance/arrow/type.h"
+#include "lance/format/format.pb.h"
 
 namespace arrow::io {
 class RandomAccessFile;
@@ -31,8 +33,20 @@ class OutputStream;
 
 namespace lance::encodings {
 
-template <typename T>
-concept ArrowType = std::is_base_of<::arrow::DataType, T>::value;
+/// Encoding type Enum
+enum Encoding {
+  NONE = 0,
+  PLAIN = 1,
+  VAR_BINARY = 2,
+  DICTIONARY = 3,
+};
+
+/// Convert protobuf to Encoding type
+Encoding FromProto(lance::format::pb::Encoding pb);
+/// Convert encoding type to protobuf.
+lance::format::pb::Encoding ToProto(Encoding encoding);
+/// Convert Encoding to string.
+std::string ToString(Encoding encoding);
 
 /// Encoder. Encodes an array and write it to the output stream.
 ///
@@ -99,6 +113,9 @@ class Decoder {
       std::shared_ptr<::arrow::Int32Array> indices) const;
 
  protected:
+  /// Make empty array.
+  virtual ::arrow::Result<std::shared_ptr<::arrow::Array>> MakeEmpty() const;
+
   std::shared_ptr<::arrow::io::RandomAccessFile> infile_;
   std::shared_ptr<::arrow::DataType> type_;
   int64_t position_ = -1;

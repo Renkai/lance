@@ -12,6 +12,7 @@
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
 """Dataset conversion"""
+
 from abc import abstractmethod, ABC
 import os
 from typing import Union
@@ -24,6 +25,9 @@ import pyarrow.parquet as pq
 import lance
 from lance.io import download_uris
 from lance.types import ImageArray, ImageBinaryType
+
+
+PUBLIC_URI_ROOT = "https://eto-public.s3.us-west-2.amazonaws.com/datasets/"
 
 
 class DatasetConverter(ABC):
@@ -47,10 +51,9 @@ class DatasetConverter(ABC):
         if fmt == "parquet":
             pq.write_table(table, output_path, **kwargs)
         elif fmt == "lance":
-            pa.dataset.write_dataset(
+            lance.write_dataset(
                 table,
                 output_path,
-                format=lance.LanceFileFormat(),
                 **kwargs,
             )
         return table
@@ -114,8 +117,8 @@ class DatasetConverter(ABC):
         if fmt == "parquet":
             pq.write_table(embedded, output_path, **kwargs)
         elif fmt == "lance":
-            pa.dataset.write_dataset(
-                embedded, output_path, format=lance.LanceFileFormat(), **kwargs
+            lance.write_dataset(
+                embedded, output_path, **kwargs
             )
         return embedded
 

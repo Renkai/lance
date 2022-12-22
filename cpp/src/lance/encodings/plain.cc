@@ -49,7 +49,8 @@ PlainEncoder::PlainEncoder(std::shared_ptr<::arrow::io::OutputStream> out) : Enc
 ::arrow::Result<int64_t> PlainEncoder::WriteFixedSizeListArray(
     const std::shared_ptr<::arrow::FixedSizeListArray>& arr) {
   assert(::arrow::is_primitive(arr->values()->type_id()));
-  return Write(arr->values());
+
+  return Write(arr->values()->Slice(arr->value_offset(0), arr->length() * arr->value_length()));
 }
 
 template <ArrowType T>
@@ -128,10 +129,13 @@ class PlainDecoderImpl : public Decoder {
     auto len = GetReadLength(start, length);
     if (len < 0) {
       return ::arrow::Status::IndexError(
-          fmt::format("{}::ToArray: out of range: start={}, length={}, page_length={}\n",
+          fmt::format("{}::ToArray: out of range: read_length={}, start={}, length={}, "
+                      "position={}, page_length={}\n",
                       ToString(),
+                      len,
                       start,
                       length.value_or(-1),
+                      position_,
                       length_));
     }
 
@@ -191,10 +195,6 @@ class PlainDecoderImpl : public Decoder {
     return std::min(length.value_or(length_), length_ - start);
   }
 
-  ::arrow::Result<std::shared_ptr<::arrow::Array>> MakeEmpty() const {
-    return ::arrow::MakeEmptyArray(type_, pool_);
-  }
-
  private:
   using ArrayType = typename ::arrow::TypeTraits<T>::ArrayType;
   using BuilderType = typename ::arrow::TypeTraits<T>::BuilderType;
@@ -228,9 +228,13 @@ class BooleanPlainDecoderImpl : public PlainDecoderImpl<::arrow::BooleanType> {
       return MakeEmpty();
     }
 
-    int64_t byte_length = ::arrow::bit_util::BytesForBits(len);
+    // The length after calculating byte alignment of the start.
+    int32_t storage_length = start % 8 + len;
+    int64_t byte_length = ::arrow::bit_util::BytesForBits(storage_length);
+
     ARROW_ASSIGN_OR_RAISE(auto buf, infile_->ReadAt(position_ + start / 8, byte_length));
-    return std::make_shared<::arrow::BooleanArray>(len, buf);
+    auto storage_arr = std::make_shared<::arrow::BooleanArray>(storage_length, buf);
+    return storage_arr->Slice(start % 8, len);
   }
 };
 

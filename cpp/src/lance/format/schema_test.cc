@@ -1,11 +1,37 @@
+//  Copyright 2022 Lance Authors
+//
+//  Licensed under the Apache License, Version 2.0 (the "License");
+//  you may not use this file except in compliance with the License.
+//  You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+//  Unless required by applicable law or agreed to in writing, software
+//  distributed under the License is distributed on an "AS IS" BASIS,
+//  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+//  See the License for the specific language governing permissions and
+//  limitations under the License.
+
 #include "lance/format/schema.h"
 
 #include <arrow/type.h>
+#include <arrow/util/key_value_metadata.h>
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 #include <catch2/catch_test_macros.hpp>
+#include <range/v3/all.hpp>
 
+#include "lance/arrow/stl.h"
 #include "lance/testing/extension_types.h"
+#include "lance/testing/io.h"
+#include "lance/testing/json.h"
+
+using lance::arrow::ToArray;
+using lance::format::Schema;
+using lance::testing::MakeDataset;
+using lance::testing::TableFromJSON;
+using namespace ranges;
 
 const auto arrow_schema = ::arrow::schema(
     {::arrow::field("pk", ::arrow::utf8()),
@@ -68,7 +94,7 @@ TEST_CASE("Project nested fields") {
 
 TEST_CASE("Get schema view") {
   auto original = lance::format::Schema(arrow_schema);
-  auto view = original.Project({"split", "annotations.box.xmin"});
+  auto view = original.Project(std::vector<std::string>({"split", "annotations.box.xmin"}));
   INFO("Create view status: " << view.status());
   CHECK(view.ok());
   CHECK((*view)->GetField("split"));
@@ -96,9 +122,48 @@ TEST_CASE("Get projection via arrow schema") {
   CHECK(expect_schema.Equals(projection, false));
 }
 
+TEST_CASE("Project using field ids") {
+  auto schema = lance::format::Schema(arrow_schema);
+  for (const auto& name : arrow_schema->field_names()) {
+    auto field_ids = schema.Project({name}).ValueOrDie()->GetFieldIds();
+    auto project = schema.Project(field_ids).ValueOrDie();
+    CHECK(project->ToArrow()->Equals(::arrow::schema({arrow_schema->GetFieldByName(name)})));
+  }
+
+  auto fields = schema.Project({"annotations.box"}).ValueOrDie()->GetFieldIds();
+  auto project = schema.Project(fields).ValueOrDie();
+  CHECK(project->ToArrow()->Equals(::arrow::schema({::arrow::field(
+      "annotations",
+      ::arrow::list(::arrow::struct_({::arrow::field("box",
+                                                     ::arrow::struct_({
+                                                         ::arrow::field("xmin", ::arrow::float32()),
+                                                         ::arrow::field("ymin", ::arrow::float32()),
+                                                         ::arrow::field("xmax", ::arrow::float32()),
+                                                         ::arrow::field("ymax", ::arrow::float32()),
+                                                     }))})))})));
+}
+
+TEST_CASE("Intersection of two schemas") {
+  auto schema = lance::format::Schema(arrow_schema);
+  auto pk_schema = schema.Project({"pk"}).ValueOrDie();
+  auto split_schema = schema.Project({"split"}).ValueOrDie();
+  CHECK(pk_schema->Intersection(*split_schema).ValueOrDie()->GetFieldsCount() == 0);
+
+  auto pk_and_split = schema.Project(std::vector<std::string>{"pk", "split"}).ValueOrDie();
+  auto split_and_annos =
+      schema.Project(std::vector<std::string>{"split", "annotations"}).ValueOrDie();
+  CHECK(pk_and_split->Intersection(*split_and_annos).ValueOrDie()->Equals(split_schema));
+}
+
+TEST_CASE("Test GetFieldIds") {
+  auto schema = lance::format::Schema(arrow_schema);
+  CHECK(schema.GetFieldIds() == (views::iota(0, 10) | to<std::vector<int32_t>>));
+}
+
 TEST_CASE("Exclude schema") {
   auto original = lance::format::Schema(arrow_schema);
-  auto projected = original.Project({"split", "annotations.box"}).ValueOrDie();
+  auto projected =
+      original.Project(std::vector<std::string>{"split", "annotations.box"}).ValueOrDie();
   INFO("Projected schema: " << projected->ToString());
   auto excluded = original.Exclude(*projected).ValueOrDie();
 
@@ -139,14 +204,14 @@ TEST_CASE("Fixed size list") {
   auto arrow_field =
       ::arrow::field("fixed_size_list", ::arrow::fixed_size_list(::arrow::int32(), 4));
   auto field = ::lance::format::Field(arrow_field);
-  CHECK(field.encoding() == ::lance::format::pb::PLAIN);
+  CHECK(field.encoding() == ::lance::encodings::PLAIN);
   CHECK(field.logical_type() == "fixed_size_list:int32:4");
 }
 
 TEST_CASE("Fixed size binary") {
   auto arrow_field = ::arrow::field("fs_binary", ::arrow::fixed_size_binary(100));
   auto field = ::lance::format::Field(arrow_field);
-  CHECK(field.encoding() == ::lance::format::pb::PLAIN);
+  CHECK(field.encoding() == ::lance::encodings::PLAIN);
   CHECK(field.logical_type() == "fixed_size_binary:100");
 }
 
@@ -183,4 +248,57 @@ TEST_CASE("Test nested storage type") {
                          ::arrow::field("ymax", ::arrow::float64()),
                      })),
   })));
+}
+
+TEST_CASE("Test schema metadata") {
+  auto schema = ::arrow::schema({::arrow::field("val", ::arrow::int32())},
+                                ::arrow::KeyValueMetadata::Make({"k1", "k2"}, {"v1", "v2"}));
+
+  auto table = ::arrow::Table::Make(schema, {ToArray({1, 2, 3}).ValueOrDie()});
+
+  auto dataset = MakeDataset(table).ValueOrDie();
+  CHECK(dataset->schema()->metadata());
+  CHECK(dataset->schema()->metadata()->Get("k1").ValueOrDie() == "v1");
+  CHECK(dataset->schema()->metadata()->Get("k1").ValueOrDie() == "v1");
+}
+
+TEST_CASE("Test merge two schemas") {
+  auto base_schema = Schema(::arrow::schema(
+      {::arrow::field("a", ::arrow::int32()), ::arrow::field("b", ::arrow::utf8())}));
+  auto merged =
+      base_schema.Merge(*::arrow::schema({::arrow::field("c", ::arrow::list(::arrow::utf8()))}))
+          .ValueOrDie();
+  CHECK(merged->GetField("a")->id() == 0);
+  CHECK(merged->GetField("b")->id() == 1);
+  CHECK(merged->GetField("c")->id() == 2);
+}
+
+TEST_CASE("Test merge two structs") {
+  auto base_schema = Schema(::arrow::schema(
+      {::arrow::field("a", ::arrow::struct_({::arrow::field("b", ::arrow::int32())}))}));
+  auto schema_c =
+      ::arrow::schema({::arrow::field("a",
+                                      ::arrow::struct_({::arrow::field("b", ::arrow::int32()),
+                                                        ::arrow::field("c", ::arrow::int64())}))});
+  auto merged = base_schema.Merge(*schema_c).ValueOrDie();
+  auto a = merged->GetField("a");
+  CHECK(a->id() == 0);
+  auto expected_struct = ::arrow::struct_(
+      {::arrow::field("b", ::arrow::int32()), ::arrow::field("c", ::arrow::int64())});
+  INFO("Expected type: " << expected_struct->ToString() << " Got: " << a->type()->ToString());
+  CHECK(a->type()->Equals(*expected_struct));
+  CHECK(merged->GetField("a.b")->id() == 1);
+  CHECK(merged->GetField("a.c")->id() == 2);
+}
+
+TEST_CASE("Test merge two list of structs") {
+  auto base_schema = Schema(::arrow::schema({::arrow::field(
+      "a", ::arrow::list(::arrow::struct_({::arrow::field("b1", ::arrow::int32())})))}));
+  auto addon_schema = ::arrow::schema({::arrow::field(
+      "a", ::arrow::list(::arrow::struct_({::arrow::field("b2", ::arrow::utf8())})))});
+  auto merged = base_schema.Merge(*addon_schema).ValueOrDie();
+  CHECK(merged->ToArrow()->Equals(::arrow::schema(
+      {::arrow::field("a",
+                      ::arrow::list(::arrow::struct_({::arrow::field("b1", ::arrow::int32()),
+                                                      ::arrow::field("b2", ::arrow::utf8())})))})));
 }

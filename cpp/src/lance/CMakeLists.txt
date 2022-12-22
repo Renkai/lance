@@ -20,3 +20,7 @@ add_subdirectory(io)
 if (CMAKE_BUILD_TYPE STREQUAL Debug)
     add_subdirectory(testing)
 endif ()
+
+if (LANCE_BUILD_CMD)
+    add_subdirectory(cmd)
+endif ()

@@ -16,7 +16,7 @@
 protobuf_generate_cpp(
         PROTO_SRCS
         PROTO_HDRS
-        ${CMAKE_SOURCE_DIR}/../protos/format.proto
+        ${PROJECT_SOURCE_DIR}/../protos/format.proto
 )
 
 add_library(
@@ -24,6 +24,8 @@ add_library(
         OBJECT
         ${PROTO_HDRS}
         ${PROTO_SRCS}
+        data_fragment.cc
+        data_fragment.h
         format.h
         manifest.cc
         manifest.h

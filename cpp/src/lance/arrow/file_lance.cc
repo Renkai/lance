@@ -18,18 +18,22 @@
 #include <arrow/util/thread_pool.h>
 #include <fmt/format.h>
 
+#include <filesystem>
 #include <memory>
+#include <utility>
 
 #include "lance/arrow/file_lance_ext.h"
+#include "lance/arrow/fragment.h"
 #include "lance/format/manifest.h"
 #include "lance/format/schema.h"
-#include "lance/io/exec/filter.h"
 #include "lance/io/exec/project.h"
 #include "lance/io/reader.h"
 #include "lance/io/record_batch_reader.h"
 #include "lance/io/writer.h"
 
 const char kLanceFormatTypeName[] = "lance";
+
+namespace fs = std::filesystem;
 
 namespace lance::arrow {
 
@@ -54,13 +58,13 @@ bool LanceFileFormat::Equals(const FileFormat& other) const {
 
 ::arrow::Result<bool> LanceFileFormat::IsSupported(
     [[maybe_unused]] const ::arrow::dataset::FileSource& source) const {
-  return true;
+  return source.path().ends_with(".lance");
 }
 
 ::arrow::Result<std::shared_ptr<::arrow::Schema>> LanceFileFormat::Inspect(
     const ::arrow::dataset::FileSource& source) const {
   if (impl_->manifest) {
-    return impl_->manifest->schema().ToArrow();
+    return impl_->manifest->schema()->ToArrow();
   }
 
   ARROW_ASSIGN_OR_RAISE(auto infile, source.Open());
@@ -68,10 +72,10 @@ bool LanceFileFormat::Equals(const FileFormat& other) const {
   ARROW_RETURN_NOT_OK(reader->Open());
   /// TODO: load dictionary here.
   impl_->manifest = reader->manifest();
-  return impl_->manifest->schema().ToArrow();
+  return impl_->manifest->schema()->ToArrow();
 }
 
-::arrow::Future<::arrow::util::optional<int64_t>> LanceFileFormat::CountRows(
+::arrow::Future<std::optional<int64_t>> LanceFileFormat::CountRows(
     const std::shared_ptr<::arrow::dataset::FileFragment>& file,
     ::arrow::compute::Expression predicate,
     const std::shared_ptr<::arrow::dataset::ScanOptions>& options) {
@@ -80,11 +84,11 @@ bool LanceFileFormat::Equals(const FileFormat& other) const {
     auto executor = options->io_context.executor();
     assert(executor != nullptr);
     auto result = executor->Submit(
-        [&](const auto& file) -> ::arrow::Result<::arrow::util::optional<int64_t>> {
+        [&](const auto& file) -> ::arrow::Result<std::optional<int64_t>> {
           ARROW_ASSIGN_OR_RAISE(auto infile, file->source().Open());
           ARROW_ASSIGN_OR_RAISE(auto reader,
                                 lance::io::FileReader::Make(infile, this->impl_->manifest));
-          return ::arrow::util::make_optional(reader->length());
+          return reader->length();
         },
         file);
     if (!result.ok()) {
@@ -99,11 +103,9 @@ bool LanceFileFormat::Equals(const FileFormat& other) const {
 ::arrow::Result<::arrow::RecordBatchGenerator> LanceFileFormat::ScanBatchesAsync(
     const std::shared_ptr<::arrow::dataset::ScanOptions>& options,
     const std::shared_ptr<::arrow::dataset::FileFragment>& file) const {
-  ARROW_ASSIGN_OR_RAISE(auto infile, file->source().Open());
-  ARROW_ASSIGN_OR_RAISE(auto reader, lance::io::FileReader::Make(infile, impl_->manifest));
-  auto batch_reader = lance::io::RecordBatchReader(
-      std::move(reader), options, ::arrow::internal::GetCpuThreadPool());
-  ARROW_RETURN_NOT_OK(batch_reader.Open());
+  ARROW_ASSIGN_OR_RAISE(auto fragment, LanceFragment::Make(*file, impl_->manifest));
+  ARROW_ASSIGN_OR_RAISE(auto batch_reader,
+                        lance::io::RecordBatchReader::Make(*fragment, options));
   return ::arrow::RecordBatchGenerator(std::move(batch_reader));
 }
 
@@ -112,8 +114,9 @@ bool LanceFileFormat::Equals(const FileFormat& other) const {
     std::shared_ptr<::arrow::Schema> schema,
     std::shared_ptr<::arrow::dataset::FileWriteOptions> options,
     ::arrow::fs::FileLocator destination_locator) const {
+  auto lance_schema = std::make_shared<lance::format::Schema>(schema);
   return std::shared_ptr<::arrow::dataset::FileWriter>(
-      new io::FileWriter(schema, options, destination, destination_locator));
+      new io::FileWriter(lance_schema, options, destination, destination_locator));
 }
 
 std::shared_ptr<::arrow::dataset::FileWriteOptions> LanceFileFormat::DefaultWriteOptions() {

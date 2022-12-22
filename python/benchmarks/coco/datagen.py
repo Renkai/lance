@@ -16,7 +16,7 @@ from lance.types import ImageType
 
 sys.path.append("..")
 
-from converter import DatasetConverter
+from converter import DatasetConverter, PUBLIC_URI_ROOT
 
 
 class CocoConverter(DatasetConverter):
@@ -25,6 +25,9 @@ class CocoConverter(DatasetConverter):
         self.version = version
 
     def _get_instances_json(self, split):
+        """
+        Read the annotations json data
+        """
         uri = os.path.join(
             self.uri_root, "annotations", f"instances_{split}{self.version}.json"
         )
@@ -33,21 +36,14 @@ class CocoConverter(DatasetConverter):
             return json.load(fobj)
 
     def _instances_to_df(self, split, instances_json):
-        df = pd.DataFrame(instances_json["annotations"])
-        df["segmentation"] = df.segmentation.apply(_convert_segmentation)
-        df["iscrowd"] = df.iscrowd.astype("bool")
-        # Convert coco dataset bounding box [x,y,width,height] to [x0,y0,x1,y1] format.
-        df["bbox"] = df.bbox.apply(
-            lambda arr: [arr[0], arr[1], arr[0] + arr[2], arr[1] + arr[3]]
-        )
-        category_df = pd.DataFrame(instances_json["categories"]).rename(
-            {"id": "category_id"}, axis=1
-        )
-        annotations_df = df.merge(category_df, on="category_id")
+        """
+        Read instances and join to images
+        """
+        annotations_df = self._ann_to_df(instances_json)
         anno_df = (
             pd.DataFrame(
                 {
-                    "image_id": df.image_id,
+                    "image_id": annotations_df.image_id,
                     "annotations": annotations_df.drop(
                         columns=["image_id"], axis=1
                     ).to_dict(orient="records"),
@@ -61,10 +57,32 @@ class CocoConverter(DatasetConverter):
         )
         images_df["split"] = split
         images_df["image_uri"] = images_df["file_name"].apply(
-            lambda fname: os.path.join(self.uri_root, f"{split}{self.version}", fname)
+            lambda fname: os.path.join(PUBLIC_URI_ROOT,
+                                       "coco",
+                                       f"{split}{self.version}",
+                                       fname)
         )
         # TODO join images_df.license to instances_json['license']
         return images_df.merge(anno_df, on="image_id")
+
+    def _ann_to_df(self, instances_json):
+        """
+        Read annotations and map to string category names
+
+        Returns
+        -------
+        ann_df: pd.DataFrame
+        """
+        df = pd.DataFrame(instances_json['annotations'])
+        cat_df = pd.DataFrame(instances_json['categories'])
+        df["segmentation"] = df.segmentation.apply(_convert_segmentation)
+        df["iscrowd"] = df.iscrowd.astype("bool")
+        # Convert coco dataset bounding box [x,y,width,height] to [x0,y0,x1,y1] format.
+        df["bbox"] = df.bbox.apply(
+            lambda arr: [arr[0], arr[1], arr[0] + arr[2], arr[1] + arr[3]]
+        )
+        category_df = cat_df.rename({"id": "category_id"}, axis=1)
+        return df.merge(category_df, on="category_id")
 
     def read_metadata(self, num_rows: int = 0) -> pd.DataFrame:
         def read_split(split):
@@ -88,15 +106,24 @@ class CocoConverter(DatasetConverter):
         return pd.concat(frames)
 
     def _get_test_images(self, dirname: str = "test"):
-        uri = os.path.join(self.uri_root, f"{dirname}{self.version}")
+        uri = os.path.join(self.uri_root,
+                           f"{dirname}{self.version}")
         fs, path = pa.fs.FileSystem.from_uri(uri)
+        public_uri = os.path.join(PUBLIC_URI_ROOT,
+                                  "coco",
+                                  f"{dirname}{self.version}")
         return [
-            os.path.join(uri, file.base_name)
+            os.path.join(public_uri, file.base_name)
             for file in fs.get_file_info(pa.fs.FileSelector(path, recursive=True))
         ]
 
     def image_uris(self, table):
-        return table["image_uri"].to_numpy()
+        prefix = os.path.join(PUBLIC_URI_ROOT, "coco/")
+        uris = np.array([
+            os.path.join(self.uri_root, image_uri[len(prefix):])
+            for image_uri in table["image_uri"].to_numpy()
+        ])
+        return uris
 
     def get_schema(self):
         names = [

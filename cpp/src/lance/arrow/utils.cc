@@ -14,16 +14,27 @@
 
 #include "lance/arrow/utils.h"
 
+#include <arrow/builder.h>
+#include <arrow/dataset/discovery.h>
+#include <arrow/filesystem/api.h>
 #include <arrow/result.h>
 #include <arrow/type_traits.h>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
+#include <uuid.h>
 
+#include <algorithm>
 #include <concepts>
+#include <random>
+#include <range/v3/action.hpp>
+#include <range/v3/view.hpp>
 #include <string>
 #include <vector>
 
+#include "lance/arrow/file_lance.h"
 #include "lance/arrow/type.h"
+
+namespace views = ranges::views;
 
 namespace lance::arrow {
 
@@ -35,6 +46,25 @@ namespace lance::arrow {
   ARROW_ASSIGN_OR_RAISE(auto right_struct, rhs->ToStructArray());
   ARROW_ASSIGN_OR_RAISE(auto struct_arr, MergeStructArrays(left_struct, right_struct, pool));
   return ::arrow::RecordBatch::FromStructArray(struct_arr);
+}
+
+::arrow::Result<std::shared_ptr<::arrow::RecordBatch>> MergeRecordBatches(
+    const std::vector<std::shared_ptr<::arrow::RecordBatch>>& batches, ::arrow::MemoryPool* pool) {
+  if (batches.empty()) {
+    return nullptr;
+  }
+  auto batch = batches[0];
+  for (auto& b : batches | views::drop(1)) {
+    if (b->num_rows() != batch->num_rows()) {
+      return ::arrow::Status::Invalid(
+          "MergeRecordBatches: attempt to merge batches with different length: ",
+          b->num_rows(),
+          " != ",
+          batch->num_rows());
+    }
+    ARROW_ASSIGN_OR_RAISE(batch, MergeRecordBatches(batch, b, pool));
+  }
+  return batch;
 }
 
 ::arrow::Result<std::shared_ptr<::arrow::Array>> MergeListArrays(
@@ -94,18 +124,17 @@ namespace lance::arrow {
     arrays.emplace_back(left_arr);
   }
 
-  for (auto& field : rhs->struct_type()->fields()) {
-    auto& name = field->name();
-    if (lhs->GetFieldByName(name)) {
-      // We've seen each other before
-      continue;
-    }
+  for (auto name :
+       rhs->struct_type()->fields()                                                      //
+           | views::filter([&lhs](auto& f) { return !lhs->GetFieldByName(f->name()); })  //
+           | views::transform([](auto& f) { return f->name(); })) {
     names.emplace_back(name);
     arrays.emplace_back(rhs->GetFieldByName(name));
   }
   return ::arrow::StructArray::Make(arrays, names);
 }
 
+/// Concept of a class that has ".fields()" method.
 template <typename T>
 concept HasFields = (std::same_as<T, ::arrow::Schema> || std::same_as<T, ::arrow::StructType>);
 
@@ -126,12 +155,11 @@ template <HasFields T>
       fields.emplace_back(merged);
     }
   }
-  for (const auto& field : rhs.fields()) {
-    auto left_field = lhs.GetFieldByName(field->name());
-    if (!left_field) {
-      fields.emplace_back(field);
-    }
-  }
+  ranges::actions::insert(
+      fields,
+      std::end(fields),  //
+      rhs.fields()       //
+          | views::filter([&lhs](auto& f) { return !lhs.GetFieldByName(f->name()); }));
   return fields;
 };
 
@@ -223,5 +251,117 @@ template <VarLenListType L>
   ARROW_ASSIGN_OR_RAISE(auto merged_fields, MergeFieldWithChildren(lhs, rhs));
   return ::arrow::schema(merged_fields);
 }
+
+::arrow::Result<std::shared_ptr<::arrow::dataset::FileSystemDataset>> OpenDataset(
+    const std::string& uri, std::shared_ptr<::arrow::dataset::Partitioning> partitioning) {
+  std::string path;
+  ARROW_ASSIGN_OR_RAISE(auto fs, ::arrow::fs::FileSystemFromUriOrPath(uri, &path));
+  ::arrow::fs::FileSelector selector;
+  selector.base_dir = path;
+  selector.recursive = true;
+  selector.allow_not_found = true;
+  auto format = lance::arrow::LanceFileFormat::Make();
+
+  auto options = ::arrow::dataset::FileSystemFactoryOptions();
+  if (partitioning) {
+    options.partitioning = partitioning;
+  }
+  ARROW_ASSIGN_OR_RAISE(
+      auto factory,
+      ::arrow::dataset::FileSystemDatasetFactory::Make(fs, selector, format, options));
+  ARROW_ASSIGN_OR_RAISE(auto dataset, factory->Finish());
+  return std::dynamic_pointer_cast<::arrow::dataset::FileSystemDataset>(dataset);
+}
+
+template <typename ArrayType>
+::arrow::Result<std::shared_ptr<::arrow::Array>> CreateArrayImpl(
+    const std::shared_ptr<::arrow::Scalar>& scalar, int64_t length, ::arrow::MemoryPool* pool) {
+  auto concrete_scalar =
+      std::dynamic_pointer_cast<typename ::arrow::TypeTraits<ArrayType>::ScalarType>(scalar);
+  auto builder =
+      std::make_shared<typename ::arrow::TypeTraits<ArrayType>::BuilderType>(scalar->type, pool);
+  ARROW_RETURN_NOT_OK(builder->Reserve(length));
+  for (int64_t i = 0; i < length; i++) {
+    ARROW_RETURN_NOT_OK(builder->Append(concrete_scalar->value));
+  }
+  return builder->Finish();
+}
+
+template <>
+::arrow::Result<std::shared_ptr<::arrow::Array>> CreateArrayImpl<::arrow::StringType>(
+    const std::shared_ptr<::arrow::Scalar>& scalar, int64_t length, ::arrow::MemoryPool* pool) {
+  auto concrete_scalar = std::dynamic_pointer_cast<::arrow::StringScalar>(scalar);
+  auto builder = ::arrow::StringBuilder(pool);
+  ARROW_RETURN_NOT_OK(builder.Reserve(length));
+  for (int64_t i = 0; i < length; i++) {
+    ARROW_RETURN_NOT_OK(builder.Append(concrete_scalar->view()));
+  }
+  return builder.Finish();
+}
+
+::arrow::Result<std::shared_ptr<::arrow::Array>> CreateArray(
+    const std::shared_ptr<::arrow::Scalar>& scalar, int64_t length, ::arrow::MemoryPool* pool) {
+  ARROW_ASSIGN_OR_RAISE(auto builder, GetArrayBuilder(scalar->type, pool));
+  switch (scalar->type->id()) {
+    case ::arrow::Type::BOOL:
+      return CreateArrayImpl<::arrow::BooleanType>(scalar, length, pool);
+    case ::arrow::Type::UINT8:
+      return CreateArrayImpl<::arrow::UInt8Type>(scalar, length, pool);
+    case ::arrow::Type::INT8:
+      return CreateArrayImpl<::arrow::Int8Type>(scalar, length, pool);
+    case ::arrow::Type::UINT16:
+      return CreateArrayImpl<::arrow::UInt16Type>(scalar, length, pool);
+    case ::arrow::Type::INT16:
+      return CreateArrayImpl<::arrow::Int16Type>(scalar, length, pool);
+    case ::arrow::Type::UINT32:
+      return CreateArrayImpl<::arrow::UInt32Type>(scalar, length, pool);
+    case ::arrow::Type::INT32:
+      return CreateArrayImpl<::arrow::Int32Type>(scalar, length, pool);
+    case ::arrow::Type::UINT64:
+      return CreateArrayImpl<::arrow::UInt64Type>(scalar, length, pool);
+    case ::arrow::Type::INT64:
+      return CreateArrayImpl<::arrow::Int64Type>(scalar, length, pool);
+    case ::arrow::Type::HALF_FLOAT:
+      return CreateArrayImpl<::arrow::HalfFloatType>(scalar, length, pool);
+    case ::arrow::Type::FLOAT:
+      return CreateArrayImpl<::arrow::FloatType>(scalar, length, pool);
+    case ::arrow::Type::DOUBLE:
+      return CreateArrayImpl<::arrow::DoubleType>(scalar, length, pool);
+    case ::arrow::Type::STRING:
+      return CreateArrayImpl<::arrow::StringType>(scalar, length, pool);
+    default:
+      return ::arrow::Status::Invalid(
+          fmt::format("CreateArray: unsupported type: {}", scalar->type->ToString()));
+  }
+}
+
+namespace {
+
+class UuidGenerator {
+ public:
+  UuidGenerator() {
+    std::generate(std::begin(seed_), std::end(seed_), std::ref(rd_));
+    std::seed_seq seq(std::begin(seed_), std::end(seed_));
+    random_gen_ = std::make_unique<std::mt19937>(seq);
+    generator_ = std::make_unique<uuids::uuid_random_generator>(*random_gen_);
+  }
+
+  std::string operator()() const {
+    auto uuid = (*generator_)();
+    return uuids::to_string(uuid);
+  }
+
+ private:
+  std::random_device rd_;
+  std::array<int, std::mt19937::state_size> seed_;
+  std::unique_ptr<std::mt19937> random_gen_;
+  std::unique_ptr<uuids::uuid_random_generator> generator_;
+};
+
+const UuidGenerator uuid_generator_;
+
+}  // namespace
+
+std::string GetUUIDString() { return uuid_generator_(); }
 
 }  // namespace lance::arrow

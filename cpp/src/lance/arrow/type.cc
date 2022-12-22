@@ -22,6 +22,7 @@
 #include <fmt/format.h>
 
 #include <memory>
+#include <range/v3/all.hpp>
 
 #include "lance/format/schema.h"
 
@@ -113,8 +114,7 @@ const static std::map<std::string, std::shared_ptr<::arrow::DataType>> kPrimitiv
     {"date64:ms", ::arrow::date64()},
 };
 
-::arrow::Result<::arrow::TimeUnit::type> TimeUnitFromLogicalType(
-    const ::arrow::util::string_view& unit) {
+::arrow::Result<::arrow::TimeUnit::type> TimeUnitFromLogicalType(const std::string& unit) {
   using Unit = ::arrow::TimeUnit;
   if (unit == "s") {
     return Unit::SECOND;
@@ -125,17 +125,16 @@ const static std::map<std::string, std::shared_ptr<::arrow::DataType>> kPrimitiv
   } else if (unit == "ns") {
     return Unit::NANO;
   };
-  return ::arrow::Status::Invalid(fmt::format("Unsupported TimeUnit: {}", unit.to_string()));
+  return ::arrow::Status::Invalid(fmt::format("Unsupported TimeUnit: {}", unit));
 }
 
 ::arrow::Result<std::shared_ptr<::arrow::DataType>> TimeFromLogicalType(
-    const ::arrow::util::string_view& logical_type) {
+    const std::string& logical_type) {
   auto components = ::arrow::internal::SplitString(logical_type, ':');
   if (components.size() != 2) {
-    return ::arrow::Status::Invalid(
-        fmt::format("Invalid timestamp string: {}", logical_type.to_string()));
+    return ::arrow::Status::Invalid(fmt::format("Invalid timestamp string: {}", logical_type));
   }
-  ARROW_ASSIGN_OR_RAISE(auto unit, TimeUnitFromLogicalType(components[1]));
+  ARROW_ASSIGN_OR_RAISE(auto unit, TimeUnitFromLogicalType(std::string(components[1])));
   if (components[0] == "timestamp") {
     return ::arrow::timestamp(unit);
   } else if (components[0] == "time32") {
@@ -143,13 +142,12 @@ const static std::map<std::string, std::shared_ptr<::arrow::DataType>> kPrimitiv
   } else if (components[0] == "time64") {
     return ::arrow::time64(unit);
   }
-  return ::arrow::Status::Invalid(
-      fmt::format("Invalid temporal logical type: {}", logical_type.to_string()));
+  return ::arrow::Status::Invalid(fmt::format("Invalid temporal logical type: {}", logical_type));
 };
 
 ::arrow::Result<std::shared_ptr<::arrow::DataType>> FromLogicalType(
-    ::arrow::util::string_view logical_type) {
-  const auto& it = kPrimitiveTypeMap.find(logical_type.to_string());
+    const std::string& logical_type) {
+  const auto& it = kPrimitiveTypeMap.find(logical_type);
   if (it != kPrimitiveTypeMap.end()) {
     return it->second;
   }
@@ -162,12 +160,12 @@ const static std::map<std::string, std::shared_ptr<::arrow::DataType>> kPrimitiv
     auto components = ::arrow::internal::SplitString(logical_type, ':');
     if (components.size() != 2) {
       return ::arrow::Status::Invalid(
-          fmt::format("Invalid fixed size binary string: {}", logical_type.to_string()));
+          fmt::format("Invalid fixed size binary string: {}", logical_type));
     }
-    auto size = std::stoi(components[1].to_string());
+    auto size = std::stoi(std::string(components[1]));
     if (size == 0) {
       return ::arrow::Status::Invalid(
-          fmt::format("Invalid fixe size binary string: {}", logical_type.to_string()));
+          fmt::format("Invalid fixe size binary string: {}", logical_type));
     }
     return ::arrow::fixed_size_binary(size);
   }
@@ -176,13 +174,13 @@ const static std::map<std::string, std::shared_ptr<::arrow::DataType>> kPrimitiv
     auto components = ::arrow::internal::SplitString(logical_type, ':');
     if (components.size() != 3) {
       return ::arrow::Status::Invalid(
-          fmt::format("Invalid fixed size list string: {}", logical_type.to_string()));
+          fmt::format("Invalid fixed size list string: {}", logical_type));
     }
-    ARROW_ASSIGN_OR_RAISE(auto value_type, FromLogicalType(components[1]));
-    auto size = std::stoi(components[2].to_string());
+    ARROW_ASSIGN_OR_RAISE(auto value_type, FromLogicalType(std::string(components[1])));
+    auto size = std::stoi(std::string(components[2]));
     if (size == 0) {
       return ::arrow::Status::Invalid(
-          fmt::format("Invalid fixe size binary string: {}", logical_type.to_string()));
+          fmt::format("Invalid fixe size binary string: {}", logical_type));
     }
     return ::arrow::fixed_size_list(value_type, size);
   }
@@ -191,15 +189,15 @@ const static std::map<std::string, std::shared_ptr<::arrow::DataType>> kPrimitiv
     auto components = ::arrow::internal::SplitString(logical_type, ':');
     if (components.size() != 4) {
       return ::arrow::Status::Invalid(
-          fmt::format("Invalid dictionary type string: {}", logical_type.to_string()));
+          fmt::format("Invalid dictionary type string: {}", logical_type));
     }
-    ARROW_ASSIGN_OR_RAISE(auto value_type, FromLogicalType(components[1]));
-    ARROW_ASSIGN_OR_RAISE(auto index_value, FromLogicalType(components[2]));
+    ARROW_ASSIGN_OR_RAISE(auto value_type, FromLogicalType(std::string(components[1])));
+    ARROW_ASSIGN_OR_RAISE(auto index_value, FromLogicalType(std::string(components[2])));
     auto ordered = components[3] == "true";
     return ::arrow::dictionary(index_value, value_type, ordered);
   }
-  return ::arrow::Status::NotImplemented(fmt::format(
-      "FromLogicalType: logical_type \"{}\" is not supported yet", logical_type.to_string()));
+  return ::arrow::Status::NotImplemented(
+      fmt::format("FromLogicalType: logical_type \"{}\" is not supported yet", logical_type));
 }
 
 ::arrow::Result<std::shared_ptr<::arrow::ArrayBuilder>> GetFixedSizeListArrayBuilder(
@@ -256,6 +254,20 @@ std::optional<std::string> GetExtensionName(std::shared_ptr<::arrow::DataType> d
     return ext_type->extension_name();
   }
   return std::nullopt;
+}
+
+std::string ToColumnName(const ::arrow::FieldRef& field_ref) {
+  if (field_ref.IsName()) {
+    return *field_ref.name();
+  } else if (field_ref.IsNested()) {
+    return *field_ref.nested_refs()                                               //
+           | ranges::views::filter([](auto& ref) { return !ref.IsFieldPath(); })  //
+           | ranges::views::transform([](auto& ref) { return *ref.name(); })      //
+           | ranges::views::join('.')                                             // ;
+           | ranges::to<std::string>;
+  }
+  assert(false);
+  return "";
 }
 
 }  // namespace lance::arrow

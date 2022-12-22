@@ -84,9 +84,6 @@ TEST_CASE("Build Scanner with nested struct") {
   INFO("Actual schema: " << scanner->options()->projected_schema->ToString());
   CHECK(expected_proj_schema->Equals(scanner->options()->projected_schema));
 
-  CHECK(scanner->options()->batch_size == 10);
-  CHECK(scanner->options()->batch_readahead == 1);
-
   fmt::print("Scanner Options: {}\n", scanner->options()->filter.ToString());
 }
 
@@ -348,4 +345,19 @@ TEST_CASE("Test projection over nested field") {
   auto expected_table =
       TableFromJSON(expected_schema, R"([{"annotations": {"name": ["a", "b"]}}])").ValueOrDie();
   CHECK(actual->Equals(*expected_table));
+}
+
+TEST_CASE("Test apply limit to multiple files") {
+  std::vector<int> values(1000);
+  std::iota(values.begin(), values.end(), 1);
+  auto arr = ToArray(values).ValueOrDie();
+  auto schema = ::arrow::schema({::arrow::field("value", ::arrow::int32())});
+  auto table = ::arrow::Table::Make(schema, {arr});
+  auto dataset = lance::testing::MakeDataset(table, {}, 50, 200).ValueOrDie();
+  auto scan_builder = lance::arrow::ScannerBuilder(dataset);
+  CHECK(scan_builder.Project({"value"}).ok());
+  CHECK(scan_builder.Limit(10, 20).ok());
+  auto scanner = scan_builder.Finish().ValueOrDie();
+  auto actual = scanner->ToTable().ValueOrDie();
+  CHECK(actual->num_rows() == 10);
 }

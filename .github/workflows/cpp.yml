@@ -8,13 +8,15 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
+    env:
+      ArrowVersion: 10.0.1-1
     defaults:
       run:
         working-directory: ./cpp
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: ccache
-        uses: hendrikmuhs/ccache-action@v1
+        uses: hendrikmuhs/ccache-action@v1.2
       - name: Run lint
         run: clang-format-14 --Werror `find src -name '*.h' -or -name '*.cc'` > /dev/null
       - name: Install dependencies
@@ -24,7 +26,7 @@ jobs:
           wget https://apache.jfrog.io/artifactory/arrow/$(lsb_release --id --short | tr 'A-Z' 'a-z')/apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
           sudo apt install -y -V ./apache-arrow-apt-source-latest-$(lsb_release --codename --short).deb
           sudo apt update
-          sudo apt install -y -V libarrow-dev libarrow-dataset-dev libparquet-dev
+          sudo apt install -y -V libarrow-dev=${ArrowVersion} libarrow-dataset-dev=${ArrowVersion} libparquet-dev=${ArrowVersion}
       - name: Cmake
         run: cmake -B build
       - name: Build
@@ -38,10 +40,12 @@ jobs:
       run:
         working-directory: ./cpp
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
       - name: Install dependencies
         run: |
           brew update
+          cd $(brew --repository)
+          git checkout 3.6.8  # Arrow 10.0
           brew install apache-arrow protobuf
       - name: Cmake
         run: cmake -B build

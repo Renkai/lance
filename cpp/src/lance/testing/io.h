@@ -21,6 +21,7 @@
 #include <memory>
 #include <string>
 
+#include "lance/arrow/fragment.h"
 #include "lance/io/exec/base.h"
 #include "lance/io/reader.h"
 
@@ -31,18 +32,25 @@ namespace lance::testing {
 
 /// Make lance::io::FileReader from an Arrow Table.
 ::arrow::Result<std::shared_ptr<lance::io::FileReader>> MakeReader(
-    const std::shared_ptr<::arrow::Table>& table);
+    const std::shared_ptr<::arrow::Table>& table,
+    uint64_t max_rows_per_group = 1024
+    );
 
 /// Make a FileSystem Dataset from the table.
 ///
 /// \param table The table to write
 /// \param partitions the column names of partitioning.
 /// \param max_rows_per_group the size of each batch group.
+/// \param max_rows_per_file the max number of rows per file.
 /// \return a FileSystem Dataset with lance format.
 ::arrow::Result<std::shared_ptr<::arrow::dataset::Dataset>> MakeDataset(
     const std::shared_ptr<::arrow::Table>& table,
     const std::vector<std::string>& partitions = {},
-    uint64_t max_rows_per_group = 0);
+    uint64_t max_rows_per_group = 0,
+    uint64_t max_rows_per_file = 0);
+
+::arrow::Result<std::shared_ptr<lance::arrow::LanceFragment>> MakeFragment(
+    const std::shared_ptr<::arrow::Table>& table);
 
 /// A ExecNode that scans a Table in memory.
 ///

@@ -16,35 +16,41 @@
 
 #include <arrow/status.h>
 #include <arrow/type.h>
+#include <arrow/util/key_value_metadata.h>
 #include <arrow/util/string.h>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
 #include <algorithm>
 #include <memory>
+#include <range/v3/view.hpp>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "lance/arrow/type.h"
 #include "lance/encodings/binary.h"
 #include "lance/encodings/dictionary.h"
+#include "lance/encodings/encoder.h"
 #include "lance/encodings/plain.h"
+#include "lance/format/format.pb.h"
 
 using std::make_shared;
 using std::string;
 using std::vector;
+using namespace ranges;
 
 namespace lance::format {
 
-Field::Field() : id_(-1), parent_(-1), encoding_(pb::NONE) {}
+Field::Field() : id_(-1), parent_(-1) {}
 
 Field::Field(const std::shared_ptr<::arrow::Field>& field)
-    : id_(0),
+    : id_(-1),
       parent_(-1),
       name_(field->name()),
       logical_type_(arrow::ToLogicalType(field->type()).ValueOrDie()),
-      extension_name_(arrow::GetExtensionName(field->type()).value_or("")),
-      encoding_(pb::NONE) {
+      extension_name_(arrow::GetExtensionName(field->type()).value_or("")) {
   if (is_extension_type()) {
     auto ext_type = std::dynamic_pointer_cast<::arrow::ExtensionType>(field->type());
     Init(ext_type->storage_type());
@@ -58,20 +64,20 @@ void Field::Init(std::shared_ptr<::arrow::DataType> dtype) {
   if (::lance::arrow::is_struct(dtype)) {
     auto struct_type = std::static_pointer_cast<::arrow::StructType>(dtype);
     for (auto& arrow_field : struct_type->fields()) {
-      children_.push_back(std::shared_ptr<Field>(new Field(arrow_field)));
+      children_.push_back(std::make_shared<Field>(arrow_field));
     }
   } else if (::lance::arrow::is_list(dtype)) {
     auto list_type = std::static_pointer_cast<::arrow::ListType>(dtype);
     children_.emplace_back(
-        std::shared_ptr<Field>(new Field(::arrow::field("item", list_type->value_type()))));
-    encoding_ = pb::PLAIN;
+        std::make_shared<Field>(::arrow::field("item", list_type->value_type())));
+    encoding_ = encodings::PLAIN;
   } else if (::arrow::is_binary_like(type_id) || ::arrow::is_large_binary_like(type_id)) {
-    encoding_ = pb::VAR_BINARY;
+    encoding_ = encodings::VAR_BINARY;
   } else if (::arrow::is_primitive(type_id) || ::arrow::is_fixed_size_binary(type_id) ||
              lance::arrow::is_fixed_size_list(dtype)) {
-    encoding_ = pb::PLAIN;
+    encoding_ = encodings::PLAIN;
   } else if (::arrow::is_dictionary(type_id)) {
-    encoding_ = pb::DICTIONARY;
+    encoding_ = encodings::DICTIONARY;
   }
 }
 
@@ -81,9 +87,12 @@ Field::Field(const pb::Field& pb)
       name_(pb.name()),
       logical_type_(pb.logical_type()),
       extension_name_(pb.extension_name()),
-      encoding_(pb.encoding()),
-      dictionary_offset_(pb.dictionary_offset()),
-      dictionary_page_length_(pb.dictionary_page_length()) {}
+      encoding_(lance::encodings::FromProto(pb.encoding())) {
+  if (pb.has_dictionary()) {
+    dictionary_offset_ = pb.dictionary().offset();
+    dictionary_page_length_ = pb.dictionary().length();
+  }
+}
 
 void Field::AddChild(std::shared_ptr<Field> child) { children_.emplace_back(child); }
 
@@ -150,15 +159,19 @@ std::shared_ptr<Field> Field::Get(const std::string_view& name) const {
 }
 
 std::string Field::ToString() const {
+  auto str = fmt::format("{}({}): {}, encoding={}",
+                         name_,
+                         id_,
+                         type()->ToString(),
+                         lance::encodings::ToString(encoding_));
+
   if (is_extension_type()) {
-    return fmt::format("{}({}): {}, encoding={}, extension_name={}",
-                       name_,
-                       id_,
-                       type()->ToString(),
-                       encoding_,
-                       extension_name_);
+    str = fmt::format("{}, extension_name={}", str, extension_name_);
   }
-  return fmt::format("{}({}): {}, encoding={}", name_, id_, type()->ToString(), encoding_);
+  if (dictionary_) {
+    str = fmt::format("{}, dict={}", str, dictionary_->ToString());
+  }
+  return str;
 }
 
 std::string Field::name() const {
@@ -170,16 +183,11 @@ std::string Field::name() const {
   }
 }
 
-void Field::set_encoding(lance::format::pb::Encoding encoding) { encoding_ = encoding; }
-
 const std::shared_ptr<::arrow::Array>& Field::dictionary() const { return dictionary_; }
 
 ::arrow::Status Field::set_dictionary(std::shared_ptr<::arrow::Array> dict_arr) {
-  if (!dictionary_) {
-    dictionary_ = dict_arr;
-    return ::arrow::Status::OK();
-  }
-  return ::arrow::Status::Invalid("Field::dictionary has already been set");
+  dictionary_ = std::move(dict_arr);
+  return ::arrow::Status::OK();
 }
 
 ::arrow::Status Field::LoadDictionary(std::shared_ptr<::arrow::io::RandomAccessFile> infile) {
@@ -206,11 +214,11 @@ int32_t Field::GetFieldsCount() const {
 std::shared_ptr<lance::encodings::Encoder> Field::GetEncoder(
     std::shared_ptr<::arrow::io::OutputStream> sink) {
   switch (encoding_) {
-    case pb::Encoding::PLAIN:
+    case encodings::PLAIN:
       return std::make_shared<lance::encodings::PlainEncoder>(sink);
-    case pb::Encoding::VAR_BINARY:
+    case encodings::VAR_BINARY:
       return std::make_shared<lance::encodings::VarBinaryEncoder>(sink);
-    case pb::Encoding::DICTIONARY:
+    case encodings::DICTIONARY:
       return std::make_shared<lance::encodings::DictionaryEncoder>(sink);
     default:
       fmt::print(stderr, "Encoding {} is not supported\n", encoding_);
@@ -224,7 +232,7 @@ std::shared_ptr<lance::encodings::Encoder> Field::GetEncoder(
     std::shared_ptr<::arrow::io::RandomAccessFile> infile) {
   std::shared_ptr<lance::encodings::Decoder> decoder;
   auto data_type = storage_type();
-  if (encoding() == pb::Encoding::PLAIN) {
+  if (encoding() == encodings::PLAIN) {
     if (logical_type_ == "list" || logical_type_ == "list.struct") {
       decoder = std::make_shared<lance::encodings::PlainDecoder>(infile, ::arrow::int32());
     } else if (data_type->id() == ::arrow::TimestampType::type_id ||
@@ -237,7 +245,7 @@ std::shared_ptr<lance::encodings::Encoder> Field::GetEncoder(
     } else {
       decoder = std::make_shared<lance::encodings::PlainDecoder>(infile, data_type);
     }
-  } else if (encoding_ == pb::Encoding::VAR_BINARY) {
+  } else if (encoding_ == encodings::VAR_BINARY) {
     if (logical_type_ == "string") {
       decoder = std::make_shared<lance::encodings::VarBinaryDecoder<::arrow::StringType>>(
           infile, data_type);
@@ -245,7 +253,7 @@ std::shared_ptr<lance::encodings::Encoder> Field::GetEncoder(
       decoder = std::make_shared<lance::encodings::VarBinaryDecoder<::arrow::BinaryType>>(
           infile, data_type);
     }
-  } else if (encoding_ == pb::Encoding::DICTIONARY) {
+  } else if (encoding_ == encodings::DICTIONARY) {
     auto dict_type = std::static_pointer_cast<::arrow::DictionaryType>(data_type);
     if (!dictionary()) {
       {
@@ -285,9 +293,13 @@ std::vector<lance::format::pb::Field> Field::ToProto() const {
   field.set_id(id_);
   field.set_logical_type(logical_type_);
   field.set_extension_name(extension_name_);
-  field.set_encoding(encoding_);
-  field.set_dictionary_offset(dictionary_offset_);
-  field.set_dictionary_page_length(dictionary_page_length_);
+  field.set_encoding(::lance::encodings::ToProto(encoding_));
+
+  if (dictionary_offset_ >= 0) {
+    field.mutable_dictionary()->set_offset(dictionary_offset_);
+    field.mutable_dictionary()->set_length(dictionary_page_length_);
+  }
+
   field.set_type(GetNodeType());
 
   pb_fields.emplace_back(field);
@@ -333,8 +345,10 @@ int32_t Field::id() const { return id_; }
 
 void Field::SetId(int32_t parent_id, int32_t* current_id) {
   parent_ = parent_id;
-  id_ = (*current_id);
-  *current_id += 1;
+  if (id_ < 0) {
+    id_ = (*current_id);
+    *current_id += 1;
+  }
   for (auto& child : children_) {
     child->SetId(id_, current_id);
   }
@@ -382,6 +396,45 @@ std::shared_ptr<Field> Field::Project(const std::shared_ptr<::arrow::Field>& arr
   return new_field;
 }
 
+::arrow::Result<std::shared_ptr<Field>> Field::Merge(const ::arrow::Field& arrow_field) const {
+  if (name() != arrow_field.name()) {
+    return ::arrow::Status::Invalid(
+        "Attempt to merge two different fields: ", name(), "!=", arrow_field.name());
+  }
+  auto self_type = type();
+  if (self_type->id() != arrow_field.type()->id()) {
+    return ::arrow::Status::Invalid("Can not merge two fields with different types: ",
+                                    self_type->ToString(),
+                                    " != ",
+                                    arrow_field.type()->ToString());
+  };
+  auto new_field = Copy(true);
+  if (::arrow::is_list_like(self_type->id())) {
+    auto list_type = std::dynamic_pointer_cast<::arrow::ListType>(arrow_field.type());
+
+    auto item_field = field(0);
+    ARROW_ASSIGN_OR_RAISE(auto new_item_field, item_field->Merge(*list_type->value_field()));
+    new_field->children_[0] = new_item_field;
+  } else if (lance::arrow::is_struct(self_type)) {
+    auto struct_type = std::dynamic_pointer_cast<::arrow::StructType>(arrow_field.type());
+    for (auto& arrow_child : struct_type->fields()) {
+      bool found = false;
+      for (std::size_t i = 0; i < new_field->children_.size(); ++i) {
+        if (new_field->children_[i]->name_ == arrow_child->name()) {
+          ARROW_ASSIGN_OR_RAISE(new_field->children_[i],
+                                new_field->children_[i]->Merge(*arrow_child));
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        new_field->children_.emplace_back(std::make_shared<Field>(arrow_child));
+      }
+    }
+  }
+  return new_field;
+}
+
 bool Field::Equals(const Field& other, bool check_id) const {
   if (check_id && (id_ != other.id_ || parent_ != other.parent_)) {
     return false;
@@ -412,7 +465,9 @@ bool Field::operator==(const Field& other) const { return Equals(other, true); }
 
 //------ Schema
 
-Schema::Schema(const google::protobuf::RepeatedPtrField<::lance::format::pb::Field>& pb_fields) {
+Schema::Schema(const google::protobuf::RepeatedPtrField<::lance::format::pb::Field>& pb_fields,
+               const google::protobuf::Map<std::string, std::string>& metadata)
+    : metadata_(std::begin(metadata), std::end(metadata)) {
   for (auto& f : pb_fields) {
     auto field = std::make_shared<Field>(f);
     if (field->parent_id() < 0) {
@@ -428,6 +483,9 @@ Schema::Schema(const google::protobuf::RepeatedPtrField<::lance::format::pb::Fie
 Schema::Schema(const std::shared_ptr<::arrow::Schema>& schema) {
   for (auto f : schema->fields()) {
     fields_.emplace_back(make_shared<Field>(f));
+  }
+  if (schema->metadata()) {
+    schema->metadata()->ToUnorderedMap(&metadata_);
   }
   AssignIds();
 }
@@ -511,25 +569,30 @@ Schema::Schema(const std::shared_ptr<::arrow::Schema>& schema) {
   }
   std::vector<std::string> columns;
   for (auto& ref : ::arrow::compute::FieldsInExpression(expr)) {
-    std::string column_name;
-    if (ref.IsName()) {
-      column_name = std::string(*ref.name());
-    } else if (ref.IsNested()) {
-      assert(ref.nested_refs());
-      for (auto& r : *ref.nested_refs()) {
-        if (r.IsFieldPath()) {
-          continue;
-        }
-        // TODO: Use SplitJoin
-        if (!column_name.empty()) {
-          column_name += ".";
-        }
-        column_name += *r.name();
-      }
-    }
-    columns.emplace_back(column_name);
+    columns.emplace_back(arrow::ToColumnName(ref));
   }
   return Project(columns);
+}
+
+::arrow::Result<std::shared_ptr<Schema>> Schema::Project(
+    const std::vector<FieldIdType>& field_ids) const {
+  assert(!field_ids.empty());
+  std::unordered_set<FieldIdType> field_id_set(std::begin(field_ids), std::end(field_ids));
+  if (field_id_set.size() != field_ids.size()) {
+    return ::arrow::Status::Invalid("Schema::Project: duplicated field id found");
+  }
+  google::protobuf::RepeatedPtrField<pb::Field> protos;
+  for (auto& pb : ToProto()) {
+    if (field_id_set.contains(pb.id())) {
+      *protos.Add() = pb;
+    }
+  }
+  auto projected = std::make_shared<Schema>(protos);
+  if (static_cast<size_t>(projected->GetFieldsCount()) != field_ids.size()) {
+    return ::arrow::Status::Invalid(fmt::format(
+        "Schema::Project(field_ids): field ids can not build a schema tree, ids={}", field_ids));
+  }
+  return projected;
 }
 
 ::arrow::Result<std::shared_ptr<Schema>> Schema::Exclude(const Schema& other) const {
@@ -562,6 +625,98 @@ Schema::Schema(const std::shared_ptr<::arrow::Schema>& schema) {
   auto visitor = SchemaExcludeVisitor(excluded);
   ARROW_RETURN_NOT_OK(visitor.VisitSchema(other));
   return excluded;
+}
+
+::arrow::Result<std::shared_ptr<Schema>> Schema::Merge(const ::arrow::Schema& arrow_schema) const {
+  auto merged = std::make_shared<Schema>();
+  for (auto& field : fields_) {
+    auto arrow_field = arrow_schema.GetFieldByName(field->name());
+    if (arrow_field) {
+      ARROW_ASSIGN_OR_RAISE(auto new_field, field->Merge(*arrow_field));
+      merged->AddField(new_field);
+    } else {
+      merged->AddField(field);
+    }
+  }
+  for (auto& arrow_field : arrow_schema.fields()) {
+    if (!GetField(arrow_field->name())) {
+      merged->AddField(std::make_shared<Field>(arrow_field));
+    }
+  }
+  // Assign to new IDs
+  merged->AssignIds();
+  return merged;
+}
+
+// Forward declaration
+::arrow::Result<std::shared_ptr<Field>> Intersection(const Field& lhs, const Field& rhs);
+
+namespace {
+
+::arrow::Result<std::vector<std::shared_ptr<Field>>> GetIntersection(
+    const std::vector<std::shared_ptr<Field>>& lhs,
+    const std::vector<std::shared_ptr<Field>>& rhs) {
+  std::vector<std::shared_ptr<Field>> results;
+
+  std::unordered_map<std::string, std::shared_ptr<Field>> rhs_map;
+  for (auto& field : rhs) {
+    rhs_map[field->name()] = field;
+  }
+  for (auto& field : lhs) {
+    auto it = rhs_map.find(field->name());
+    if (it == rhs_map.end()) {
+      continue;
+    }
+    ARROW_ASSIGN_OR_RAISE(auto intersection, Intersection(*field, *it->second));
+    if (intersection) {
+      results.emplace_back(intersection);
+    }
+  }
+  return results;
+}
+
+};  // namespace
+
+// Not in anonymous namespace because it is friend method of Field.
+::arrow::Result<std::shared_ptr<Field>> Intersection(const Field& lhs, const Field& rhs) {
+  if (lhs.name() != rhs.name()) {
+    return ::arrow::Status::Invalid(
+        "Intersection over two different fields: ", lhs.name(), " != ", rhs.name());
+  }
+  auto lhs_type = lhs.type();
+  auto rhs_type = rhs.type();
+  if (lhs_type->id() != rhs_type->id()) {
+    return ::arrow::Status::Invalid("Intersection: two fields are not compatible: ",
+                                    lhs_type->ToString(),
+                                    " != ",
+                                    rhs_type->ToString());
+  }
+  if (lance::arrow::is_struct(lhs_type)) {
+    ARROW_ASSIGN_OR_RAISE(auto children, GetIntersection(lhs.children_, rhs.children_));
+    if (!children.empty()) {
+      auto intersection = lhs.Copy(false);
+      intersection->children_ = std::move(children);
+      return intersection;
+    }
+  } else if (lance::arrow::is_list(lhs_type)) {
+    ARROW_ASSIGN_OR_RAISE(auto child, Intersection(*lhs.field(0), *rhs.field(0)));
+    if (child) {
+      auto intersection = lhs.Copy(false);
+      intersection->AddChild(child);
+      return intersection;
+    }
+  } else {
+    return lhs.Copy(true);
+  }
+  return nullptr;
+}
+
+::arrow::Result<std::shared_ptr<Schema>> Schema::Intersection(const Schema& other) const {
+  auto intersection = std::make_shared<Schema>();
+
+  ARROW_ASSIGN_OR_RAISE(auto fields, GetIntersection(fields_, other.fields_));
+  intersection->fields_ = std::move(fields);
+  return intersection;
 }
 
 void Schema::AddField(std::shared_ptr<Field> f) { fields_.emplace_back(f); }
@@ -603,6 +758,13 @@ int32_t Schema::GetFieldsCount() const {
       });
 }
 
+std::vector<int32_t> Schema::GetFieldIds() const {
+  auto protos = ToProto();
+  return protos                                              //
+         | views::transform([](auto& f) { return f.id(); })  //
+         | to<std::vector<int32_t>>;
+}
+
 std::vector<lance::format::pb::Field> Schema::ToProto() const {
   std::vector<lance::format::pb::Field> pb_fields;
 
@@ -613,20 +775,41 @@ std::vector<lance::format::pb::Field> Schema::ToProto() const {
   return pb_fields;
 }
 
-/// Make a full copy of the schema.
+/// Make a full deep copy of the schema, which makes a copy of each node
+/// in the schema tree.
 std::shared_ptr<Schema> Schema::Copy() const {
   auto copy = std::make_shared<Schema>();
   for (auto& field : fields_) {
     copy->fields_.emplace_back(field->Copy(true));
   };
+  copy->metadata_ = metadata_;
   return copy;
 }
 
 void Schema::AssignIds() {
-  int cur_id = 0;
+  int cur_id = GetMaxId() + 1;
   for (auto& field : fields_) {
     field->SetId(-1, &cur_id);
   }
+}
+
+int32_t Schema::GetMaxId() const {
+  class MaxIdVisitor : public FieldVisitor {
+   public:
+    ::arrow::Status Visit(std::shared_ptr<Field> field) override {
+      max_id_ = std::max(field->id(), max_id_);
+      for (auto& child : field->children_) {
+        ARROW_RETURN_NOT_OK(Visit(child));
+      }
+      return ::arrow::Status::OK();
+    }
+    int32_t max_id_ = -1;
+  };
+  auto visitor = MaxIdVisitor();
+  if (!visitor.VisitSchema(*this).ok()) {
+    fmt::print(stderr, "Error when collecting max ID");
+  }
+  return visitor.max_id_;
 }
 
 bool Schema::RemoveField(int32_t id) {
@@ -677,7 +860,13 @@ std::shared_ptr<::arrow::Schema> Schema::ToArrow() const {
   for (auto f : fields_) {
     arrow_fields.emplace_back(f->ToArrow());
   }
-  return ::arrow::schema(arrow_fields);
+
+  std::shared_ptr<::arrow::KeyValueMetadata> arrow_metadata;
+  if (!metadata_.empty()) {
+    arrow_metadata = std::make_shared<::arrow::KeyValueMetadata>(metadata_);
+  }
+
+  return ::arrow::schema(arrow_fields, arrow_metadata);
 }
 
 pb::Field::Type Field::GetNodeType() const {
@@ -687,6 +876,36 @@ pb::Field::Type Field::GetNodeType() const {
     return pb::Field::REPEATED;
   } else {
     return pb::Field::LEAF;
+  }
+}
+
+void Print(const Field& field, const std::string& path, int indent = 0) {
+  auto full_path = path.empty() ? field.name() : path + "." + field.name();
+  fmt::print("{:{}}{}: id={}, type={}, encoding={}",
+             " ",
+             indent * 2,
+             full_path,
+             field.id(),
+             field.logical_type(),
+             lance::encodings::ToString(field.encoding()));
+  if (field.is_extension_type()) {
+    fmt::print(", extension={}", field.extension_name_);
+  }
+  fmt::print("\n");
+  for (auto& child : field.fields()) {
+    Print(*child, full_path, indent + 1);
+  }
+}
+
+void Print(const Schema& schema) {
+  for (auto field : schema.fields()) {
+    Print(*field, "");
+  }
+  if (!schema.metadata().empty()) {
+    fmt::print("Metadata:\n");
+    for (auto& [k, v] : schema.metadata()) {
+      fmt::print("  {}: {}\n", k, v);
+    }
   }
 }
 

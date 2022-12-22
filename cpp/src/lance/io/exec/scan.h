@@ -20,7 +20,10 @@
 
 #include <memory>
 #include <mutex>
+#include <tuple>
+#include <vector>
 
+#include "lance/arrow/fragment.h"
 #include "lance/io/exec/base.h"
 
 namespace lance::format {
@@ -37,20 +40,30 @@ namespace lance::io::exec {
 class Scan : public ExecNode {
  public:
   /// Factory method.
-  static ::arrow::Result<std::unique_ptr<Scan>> Make(std::shared_ptr<FileReader> reader,
-                                                     std::shared_ptr<lance::format::Schema> schema,
-                                                     int64_t batch_size);
+  ///
+  /// \param readers a vector of the tuples of `[reader, schema]`, including opened file reader
+  ///                and projection schema.
+  /// \param batch_size batch size.
+  /// \param executor executor to run parallel jobs.
+  /// \return a Scan node if succeed.
+  static ::arrow::Result<std::unique_ptr<Scan>> Make(
+      const std::vector<lance::arrow::LanceFragment::FileReaderWithSchema>& readers,
+      int64_t batch_size,
+      ::arrow::internal::Executor* executor = ::arrow::internal::GetCpuThreadPool());
 
   Scan() = delete;
 
-  virtual ~Scan() = default;
+  ~Scan() override = default;
 
   constexpr Type type() const override { return Type::kScan; }
+
   /// Returns the next available batch in the file. Or returns nullptr if EOF.
   ::arrow::Result<ScanBatch> Next() override;
 
-  const lance::format::Schema& schema();
+  ::arrow::Result<std::shared_ptr<::arrow::RecordBatch>> Take(
+      int32_t batch_id, const std::shared_ptr<::arrow::Int32Array>& indices);
 
+  /// Debug String
   std::string ToString() const override;
 
   /// Seek to a particular row.
@@ -63,16 +76,16 @@ class Scan : public ExecNode {
  private:
   /// Constructor
   ///
-  /// \param reader An opened file reader.
-  /// \param schema The scan schema, used to select column to scan.
+  /// \param readers A vector of opened readers with the projected schema.
   /// \param batch_size scan batch size.
-  Scan(std::shared_ptr<FileReader> reader,
-       std::shared_ptr<lance::format::Schema> schema,
-       int64_t batch_size);
+  /// \param executor executor to run parallel jobs.
+  Scan(const std::vector<lance::arrow::LanceFragment::FileReaderWithSchema>& readers,
+       int64_t batch_size,
+       ::arrow::internal::Executor* executor);
 
-  const std::shared_ptr<FileReader> reader_;
-  const std::shared_ptr<lance::format::Schema> schema_;
+  std::vector<lance::arrow::LanceFragment::FileReaderWithSchema> readers_;
   const int64_t batch_size_;
+  ::arrow::internal::Executor* executor_;
 
   /// Keep track of the progress.
   std::mutex lock_;

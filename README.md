@@ -1,46 +1,43 @@
-# Lance: A Columnar Data Format for Computer Vision
+<div align="center">
+<p align="center">
+ 
+<img width="257" alt="Lance Logo" src="https://user-images.githubusercontent.com/917119/199353423-d3e202f7-0269-411d-8ff2-e747e419e492.png">
+
+**Blazing fast exploration and analysis of ML data using python and SQL, backed by an Apache-Arrow compatible data format**
+
+<a href="https://eto-ai.github.io/lance/">Documentation</a> •
+<a href="https://blog.eto.ai/">Blog</a> •
+<a href="https://discord.gg/zMM32dvNtd">Discord</a> •
+<a href="https://twitter.com/etodotai">Twitter</a>
 
 ![CI](https://github.com/eto-ai/lance/actions/workflows/cpp.yml/badge.svg)
 [![Docs](https://img.shields.io/badge/docs-passing-brightgreen)](https://eto-ai.github.io/lance/)
-
-[![PyPi](https://img.shields.io/pypi/v/pylance)](https://pypi.org/project/pylance/)
 ![Python versions](https://img.shields.io/pypi/pyversions/pylance)
+ 
+<img width="600" alt="Lance Basic Query Visualizing Misclassifications" src="https://user-images.githubusercontent.com/917119/199368681-7985c183-5f5e-4327-9561-77f679767bfa.png">
 
-Lance is a cloud-native columnar data format designed for managing large-scale computer vision datasets in production
-environments. Lance delivers blazing fast performance for image and video data use cases from analytics to point
-queries to training scans.
+</p>
+</div>
 
-Lance core is written in C++ and comes with python bindings to start. With first class Apache Arrow integration, Lance is queryable by tools like DuckDB out of the box and can be converted from parquet with a single line of code.
+<hr />
 
-## What problems does Lance solve?
+Lance makes machine learning workflows with ML data easy (images, videos, point clouds, audio, and of course tabular data), by allowing Developers, Analysts and Operations to:
 
-Today, the data tooling stack for computer vision is insufficient to serve the needs of the ML engineering community.
+* Use SQL to greatly simplify common operations on ML data, such as similarity search for data discovery, model inference and computing evaluation metrics.
 
-### Working with vision data for ML is different from working with tabular data:
-- Training, analytics, and labeling uses different tools requiring different formats
-- Data annotations are almost always deeply nested
-- Images / videos are large blobs that are difficult to query by existing engines
+* Version, compare and diff ML datasets easily.
 
-### This results in some major pain-points:
-- Too much time spent on low level data munging
-- Multiple copies creates data quality issues, even for well-known datasets
-- Reproducibility and data versioning is extremely difficult to achieve
+* (Coming soon) visualize, slice and drill-into datasets to inspect embeddings, labels/annotations and metrics.
 
-### Lance to the rescue
-To solve these pain-points, we are building Lance, an open-source columnar data format optimized for computer vision with the following goals:
-- Blazing fast performance for analytical scans and random access to individual records (for visualization and annotation)
-- Rich ML data types and integrations to eliminate manual data conversions
-- Support for vector and search indices, versioning, and schema evolution
+Lance is powered by Lance Format, an Apache-Arrow compatible columnar data format which is an alternative to Parquet, Iceberg and Delta. Lance has 50-100x faster query performance for ML data.
 
 ## Quick Start
-
-We've provided Linux and MacOS wheels for Lance in PyPI. You can install Lance python bindings via:
 
 ```
 pip install pylance
 ```
 
-Thanks for its Apache Arrow-first APIs, `lance` can be used as a native `Arrow` extension.
+Thanks to its Apache Arrow-first APIs, `lance` can be used as a native `Arrow` extension.
 For example, it enables users to directly use `DuckDB` to analyze lance dataset
 via [DuckDB's Arrow integration](https://duckdb.org/docs/guides/python/sql_on_arrow).
 
@@ -53,6 +50,31 @@ import duckdb
 ds = lance.dataset("s3://eto-public/datasets/oxford_pet/oxford_pet.lance")
 duckdb.query('select class, count(1) from ds group by 1').to_arrow_table()
 ```
+
+You can easily import a DataFrame or a Parquet file to Lance using Apache Arrow-first APIs:
+
+```python
+import pyarrow as pa
+
+# Import a pandas DataFrame to Lance
+tbl = pa.Table.from_pandas(my_dataframe)
+lance.write_dataset(tbl, '/tmp/my_dataframe.lance')
+
+# Import a Parquet file to Lance
+parquet_dataset = ds.dataset('/tmp/hello.parquet')
+lance.write_dataset(parquet_dataset, '/tmp/hello.lance')
+```
+
+For more details, read our [documentation](https://eto-ai.github.io/lance/notebooks/02_creating_lance_datasets.html).
+
+## Important directories
+
+| Directory                                  | Description                            |
+|--------------------------------------------|----------------------------------------|
+| [cpp](./cpp)                               | Core Lance Format |
+| [python](./python)                         | Python SDK (Pylance)                |
+| [notebooks](./python/notebooks)            | Jupyter Notebooks                      |
+| [duckdb extension](./integration/duckdb)   | Lance Duckdb extension                 |
 
 ## What makes Lance different
 
